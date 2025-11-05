@@ -1,4 +1,11 @@
+"use client";
+import { useState } from "react";
+import AuthModal from "@/components/AuthModal";
+
 export default function Home() {
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalMode, setModalMode] = useState<"login" | "register">("login");
+  const [token, setToken] = useState<string | null>(null);
   return (
     <div className="min-h-screen bg-gradient-to-b from-neutral-800 via-neutral-900 to-neutral-950 text-neutral-200">
       <header className="sticky top-0 z-40 bg-transparent">
@@ -13,8 +20,20 @@ export default function Home() {
             <a className="text-sm text-neutral-300 hover:text-violet-300" href="#contact">联系</a>
           </nav>
           <div className="flex items-center gap-3">
-            <button className="rounded-md px-3 py-2 text-sm text-neutral-200 hover:bg-white/5">登录</button>
-            <button className="rounded-md bg-gradient-to-r from-violet-500 via-fuchsia-500 to-violet-600 px-3 py-2 text-sm text-white shadow-sm hover:from-violet-600 hover:via-fuchsia-600 hover:to-violet-700">注册</button>
+            {token ? (
+              <div className="text-sm text-neutral-300">已登录</div>
+            ) : (
+              <>
+                <button
+                  className="rounded-md px-3 py-2 text-sm text-neutral-200 hover:bg-white/5"
+                  onClick={() => { setModalMode("login"); setModalOpen(true); }}
+                >登录</button>
+                <button
+                  className="rounded-md bg-gradient-to-r from-violet-500 via-fuchsia-500 to-violet-600 px-3 py-2 text-sm text-white shadow-sm hover:from-violet-600 hover:via-fuchsia-600 hover:to-violet-700"
+                  onClick={() => { setModalMode("register"); setModalOpen(true); }}
+                >注册</button>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -88,6 +107,12 @@ export default function Home() {
           </div>
         </div>
       </footer>
+      <AuthModal
+        open={modalOpen}
+        mode={modalMode}
+        onClose={() => setModalOpen(false)}
+        onAuthed={(t) => { setToken(t); localStorage.setItem("accessToken", t); }}
+      />
     </div>
   );
 }
