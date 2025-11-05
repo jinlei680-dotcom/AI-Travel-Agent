@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { post } from "@/lib/api";
 
 type Mode = "login" | "register";
@@ -15,6 +15,13 @@ export default function AuthModal({ open, mode, onClose, onAuthed }: {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Sync internal tab state with incoming mode when it changes
+  useEffect(() => {
+    if (open) {
+      setCurrent(mode);
+    }
+  }, [mode, open]);
 
   if (!open) return null;
 
