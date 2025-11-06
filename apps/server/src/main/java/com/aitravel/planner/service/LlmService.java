@@ -14,6 +14,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.*;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.function.Consumer;
 
 @Service
 public class LlmService {
@@ -82,7 +90,7 @@ public class LlmService {
             );
 
             if (isDashScope && !isDashScopeCompatible) {
-                // DashScope 标准：chat 或 text-generation
+                // DashScope 标准：chat 或 text-generation（按文本返回，不强制 JSON）
                 if (preferTextGeneration) {
                     // text-generation 使用 prompt 字段
                     String prompt = systemPrompt + "\n\n用户需求:" + userContent;
@@ -93,11 +101,11 @@ public class LlmService {
                     body.put("input", Map.of("messages", messages));
                     body.put("task", "chat");
                 }
-                body.put("parameters", Map.of("result_format", "json"));
+                // 不设置 parameters.result_format，默认返回文本
             } else {
-                // OpenAI 兼容形态（包括 DashScope 兼容端点）
+                // OpenAI 兼容形态（包括 DashScope 兼容端点）：直接返回文本消息内容
                 body.put("messages", messages);
-                body.put("response_format", Map.of("type", "json_object"));
+                // 不使用 response_format: json_object，避免服务端要求提示含 "json"
             }
 
             HttpHeaders headers = new HttpHeaders();
@@ -128,43 +136,135 @@ public class LlmService {
                 log.warn("OpenAI 返回空内容");
                 return Optional.empty();
             }
-            JsonNode planNode = mapper.readTree(content);
-            ItineraryPlan plan = new ItineraryPlan();
-            // cityCenter
-            List<Double> center = new ArrayList<>();
-            for (JsonNode n : planNode.path("cityCenter")) { center.add(n.asDouble()); }
-            plan.setCityCenter(center.isEmpty() ? List.of(116.402, 39.907) : center);
-            // days
-            List<DayPlan> days = new ArrayList<>();
-            for (JsonNode d : planNode.path("days")) {
+            // 尝试按 JSON 解析；若失败则按纯文本降级为 summary
+            try {
+                JsonNode planNode = mapper.readTree(content);
+                ItineraryPlan plan = new ItineraryPlan();
+                // cityCenter
+                List<Double> center = new ArrayList<>();
+                for (JsonNode n : planNode.path("cityCenter")) { center.add(n.asDouble()); }
+                plan.setCityCenter(center.isEmpty() ? List.of(116.402, 39.907) : center);
+                // days
+                List<DayPlan> days = new ArrayList<>();
+                for (JsonNode d : planNode.path("days")) {
+                    DayPlan day = new DayPlan();
+                    day.setSummary(d.path("summary").asText(null));
+                    List<Route> routes = new ArrayList<>();
+                    for (JsonNode r : d.path("routes")) {
+                        Route rt = new Route();
+                        rt.setPolyline(r.path("polyline").asText(null));
+                        rt.setColor(r.path("color").asText(null));
+                        routes.add(rt);
+                    }
+                    day.setRoutes(routes);
+                    List<Poi> pois = new ArrayList<>();
+                    for (JsonNode p : d.path("pois")) {
+                        Poi poi = new Poi();
+                        poi.setName(p.path("name").asText(null));
+                        List<Double> coord = new ArrayList<>();
+                        for (JsonNode c : p.path("coord")) { coord.add(c.asDouble()); }
+                        poi.setCoord(coord);
+                        poi.setType(p.path("type").asText(null));
+                        pois.add(poi);
+                    }
+                    day.setPois(pois);
+                    days.add(day);
+                }
+                plan.setDays(days);
+                return Optional.of(plan);
+            } catch (Exception parseErr) {
+                // 纯文本：把内容放入第1天 summary，地图数据留空
+                ItineraryPlan plan = new ItineraryPlan();
+                plan.setCityCenter(List.of(116.402, 39.907));
                 DayPlan day = new DayPlan();
-                day.setSummary(d.path("summary").asText(null));
-                List<Route> routes = new ArrayList<>();
-                for (JsonNode r : d.path("routes")) {
-                    Route rt = new Route();
-                    rt.setPolyline(r.path("polyline").asText(null));
-                    rt.setColor(r.path("color").asText(null));
-                    routes.add(rt);
-                }
-                day.setRoutes(routes);
-                List<Poi> pois = new ArrayList<>();
-                for (JsonNode p : d.path("pois")) {
-                    Poi poi = new Poi();
-                    poi.setName(p.path("name").asText(null));
-                    List<Double> coord = new ArrayList<>();
-                    for (JsonNode c : p.path("coord")) { coord.add(c.asDouble()); }
-                    poi.setCoord(coord);
-                    poi.setType(p.path("type").asText(null));
-                    pois.add(poi);
-                }
-                day.setPois(pois);
-                days.add(day);
+                day.setSummary(content);
+                day.setRoutes(Collections.emptyList());
+                day.setPois(Collections.emptyList());
+                plan.setDays(List.of(day));
+                return Optional.of(plan);
             }
-            plan.setDays(days);
-            return Optional.of(plan);
         } catch (Exception e) {
             log.warn("调用 LLM 失败: {}", e.toString());
             return Optional.empty();
+        }
+    }
+
+    /**
+     * 流式获取纯文本内容（OpenAI 兼容接口）。
+     * 仅在非 DashScope 标准端点时启用真实流式；其它情况回退为同步，避免不兼容导致错误。
+     */
+    public void streamText(String text, String city, Consumer<String> onChunk) {
+        if (openaiApiKey == null || openaiApiKey.isBlank()) {
+            log.warn("OPENAI API KEY 未配置，跳过 LLM 流式调用");
+            return;
+        }
+        try {
+            boolean isDashScope = openaiBaseUrl != null && openaiBaseUrl.contains("dashscope.aliyuncs.com");
+            boolean isDashScopeCompatible = isDashScope && (
+                    openaiBaseUrl.contains("/compatible") || openaiBaseUrl.contains("/compatible-mode")
+            );
+            // 仅 OpenAI 兼容路径启用 stream=true
+            if (isDashScope && !isDashScopeCompatible) {
+                // 回退到非流式：直接同步调用并一次性吐出内容
+                Optional<ItineraryPlan> planOpt = plan(text, city);
+                if (planOpt.isPresent()) {
+                    String summary = planOpt.get().getDays() != null && !planOpt.get().getDays().isEmpty()
+                            ? planOpt.get().getDays().get(0).getSummary()
+                            : "";
+                    if (summary != null && !summary.isBlank()) onChunk.accept(summary);
+                }
+                return;
+            }
+
+            String base = (openaiBaseUrl == null || openaiBaseUrl.isBlank()) ? "https://api.openai.com" : openaiBaseUrl;
+            String url;
+            if (base.endsWith("/v1") || base.endsWith("/v1/")) {
+                url = base + "/chat/completions";
+            } else {
+                url = base + "/v1/chat/completions";
+            }
+
+            String userContent = (city == null || city.isBlank()) ? text : (text + "\n城市:" + city);
+            List<Map<String, String>> messages = List.of(
+                    Map.of("role", "system", "content", systemPrompt),
+                    Map.of("role", "user", "content", userContent)
+            );
+            Map<String, Object> body = new HashMap<>();
+            body.put("model", openaiModel);
+            body.put("messages", messages);
+            body.put("stream", true);
+
+            String jsonBody = mapper.writeValueAsString(body);
+            HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                    .header("Authorization", "Bearer " + openaiApiKey)
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                    .build();
+            HttpClient client = HttpClient.newHttpClient();
+            HttpResponse<java.io.InputStream> resp = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(resp.body(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    line = line.trim();
+                    if (line.isEmpty()) continue;
+                    if (!line.startsWith("data:")) continue;
+                    String data = line.substring(5).trim();
+                    if ("[DONE]".equals(data)) break;
+                    try {
+                        JsonNode node = mapper.readTree(data);
+                        // OpenAI 流式：choices[0].delta.content
+                        String chunk = node.path("choices").path(0).path("delta").path("content").asText("");
+                        if (chunk == null) chunk = "";
+                        if (!chunk.isEmpty()) {
+                            onChunk.accept(chunk);
+                        }
+                    } catch (Exception parseErr) {
+                        // 非 JSON 行，忽略
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("LLM 流式读取失败: {}", e.toString());
         }
     }
 }

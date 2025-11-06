@@ -19,3 +19,10 @@ logs/
 
 # OS
 .DS_Store
+
+# Env & local config
+.env*
+.env.local
+
+# Temporary build artifacts
+tmp_classes/

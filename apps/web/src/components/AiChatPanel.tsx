@@ -19,7 +19,7 @@ function planToText(plan: ItineraryPlan): string {
   return parts.join("\n");
 }
 
-export default function AiChatPanel({ onPlanned }: { onPlanned: (p: ItineraryPlan) => void }) {
+export default function AiChatPanel({ onPlanned, showTranscript = true }: { onPlanned: (p: ItineraryPlan) => void; showTranscript?: boolean }) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const lastAssistantIndex = useRef<number | null>(null);
 
@@ -54,11 +54,11 @@ export default function AiChatPanel({ onPlanned }: { onPlanned: (p: ItineraryPla
   };
 
   const transcript = useMemo(() => (
-    <div className="space-y-3">
+    <div className="space-y-3 max-h-24 overflow-y-auto">
       {msgs.map((m, i) => (
         <div
           key={i}
-          className={`${m.role === "user" ? "bg-neutral-800/70" : "bg-violet-900/40"} rounded-md p-4 ring-1 ring-white/10`}
+          className={`${m.role === "user" ? "bg-neutral-800/70" : "bg-violet-900/40"} rounded-md p-3 ring-1 ring-white/10`}
         >
           <div className="text-xs text-neutral-400 mb-1">{m.role === "user" ? "你" : "AI"}</div>
           <div className="whitespace-pre-wrap text-sm text-neutral-200">{m.content}</div>
@@ -70,9 +70,9 @@ export default function AiChatPanel({ onPlanned }: { onPlanned: (p: ItineraryPla
   return (
     <div className="space-y-4">
       <div className="text-sm text-neutral-400">AI 对话</div>
-      {transcript}
+      {showTranscript && transcript}
       <div className="pt-2">
-        <ItineraryInput onPlanned={onPlan} onUserSubmit={addUser} hideLabel />
+        <ItineraryInput onPlanned={onPlan} onUserSubmit={addUser} hideLabel rows={3} />
       </div>
     </div>
   );

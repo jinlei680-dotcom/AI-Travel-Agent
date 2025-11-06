@@ -4,6 +4,8 @@ import AuthModal from "@/components/AuthModal";
 import { ItineraryPlan } from "@/components/ItineraryInput";
 import MapView from "@/components/MapView";
 import AiChatPanel from "@/components/AiChatPanel";
+import HeroModule from "@/components/HeroModule";
+import PlanTextView from "@/components/PlanTextView";
 
 export default function Home() {
   const [modalOpen, setModalOpen] = useState(false);
@@ -43,19 +45,23 @@ export default function Home() {
       </header>
 
       <main>
+        {/* Centered hero module */}
+        <HeroModule />
+
+        {/* AI 对话模块：紧跟在 Hero 文案下方，且不使用卡片边框 */}
+        <section className="px-6 py-8">
+          <div className="mx-auto max-w-2xl">
+            <AiChatPanel onPlanned={(p) => setPlan(p)} showTranscript={false} />
+          </div>
+        </section>
+
         {/* Unified content with sticky framed map */}
         <section>
           <div className="mx-auto grid max-w-6xl grid-cols-1 items-start gap-12 px-6 py-16 md:grid-cols-2">
             <div className="space-y-10">
-              <h1 className="bg-gradient-to-r from-violet-200 via-fuchsia-200 to-indigo-200 bg-clip-text text-3xl font-bold tracking-tight text-transparent sm:text-5xl">
-                语音驱动的 AI 旅行规划师
-              </h1>
-              <p className="mt-4 text-neutral-300">
-                说出你的目的地、日期与预算，AI 即刻生成可执行行程，含交通、住宿、景点与餐厅建议。
-              </p>
-              {/* 顶部按钮已移除 */}
-              <div className="mt-4 rounded-2xl ring-1 ring-white/10 bg-neutral-900/70 p-6 shadow-sm">
-                <AiChatPanel onPlanned={(p) => setPlan(p)} />
+              {/* 旅游计划文案：展示模型输出的文字结果 */}
+              <div className="rounded-2xl ring-1 ring-white/10 bg-neutral-900/70 p-6 shadow-sm">
+                <PlanTextView plan={plan} />
               </div>
               {/* 地图预览卡片已删除，仅保留 AI 对话面板 */}
               {/* Inline quick actions for future features (kept minimal, no frames) */}
