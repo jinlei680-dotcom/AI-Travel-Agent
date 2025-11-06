@@ -1,11 +1,15 @@
 "use client";
 import { useState } from "react";
 import AuthModal from "@/components/AuthModal";
+import { ItineraryPlan } from "@/components/ItineraryInput";
+import MapView from "@/components/MapView";
+import AiChatPanel from "@/components/AiChatPanel";
 
 export default function Home() {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState<"login" | "register">("login");
   const [token, setToken] = useState<string | null>(null);
+  const [plan, setPlan] = useState<ItineraryPlan | null>(null);
   return (
     <div className="min-h-screen bg-gradient-to-b from-neutral-800 via-neutral-900 to-neutral-950 text-neutral-200">
       <header className="sticky top-0 z-40 bg-transparent">
@@ -41,18 +45,19 @@ export default function Home() {
       <main>
         {/* Unified content with sticky framed map */}
         <section>
-          <div className="mx-auto grid max-w-6xl grid-cols-1 items-start gap-8 px-6 py-16 md:grid-cols-2">
-            <div className="space-y-6">
+          <div className="mx-auto grid max-w-6xl grid-cols-1 items-start gap-12 px-6 py-16 md:grid-cols-2">
+            <div className="space-y-10">
               <h1 className="bg-gradient-to-r from-violet-200 via-fuchsia-200 to-indigo-200 bg-clip-text text-3xl font-bold tracking-tight text-transparent sm:text-5xl">
                 语音驱动的 AI 旅行规划师
               </h1>
               <p className="mt-4 text-neutral-300">
                 说出你的目的地、日期与预算，AI 即刻生成可执行行程，含交通、住宿、景点与餐厅建议。
               </p>
-              <div className="mt-6 flex gap-3">
-                <a href="#start" className="rounded-md bg-gradient-to-r from-violet-500 via-fuchsia-500 to-violet-600 px-4 py-2 text-white shadow-sm hover:from-violet-600 hover:via-fuchsia-600 hover:to-violet-700">开始规划</a>
-                <a href="#demo" className="rounded-md px-4 py-2 text-neutral-200 hover:bg-white/5">查看示例</a>
+              {/* 顶部按钮已移除 */}
+              <div className="mt-4 rounded-2xl ring-1 ring-white/10 bg-neutral-900/70 p-6 shadow-sm">
+                <AiChatPanel onPlanned={(p) => setPlan(p)} />
               </div>
+              {/* 地图预览卡片已删除，仅保留 AI 对话面板 */}
               {/* Inline quick actions for future features (kept minimal, no frames) */}
               <div className="flex flex-wrap gap-3">
                 <button className="rounded-md px-3 py-2 text-sm text-neutral-200 hover:bg-white/5">快速创建行程</button>
@@ -61,9 +66,9 @@ export default function Home() {
               </div>
             </div>
             <div className="md:sticky md:top-24">
-              <div className="rounded-xl ring-1 ring-violet-400/25 bg-neutral-900/60 p-4">
+              <div className="rounded-2xl ring-1 ring-white/10 bg-neutral-900/70 p-6 shadow-sm">
                 <div className="mb-2 text-sm text-neutral-400">地图预览</div>
-                <div className="aspect-[4/3] w-full rounded-lg bg-neutral-800" />
+                <MapView plan={plan ?? undefined} />
               </div>
             </div>
           </div>

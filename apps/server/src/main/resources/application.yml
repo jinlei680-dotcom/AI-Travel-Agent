@@ -38,6 +38,19 @@ logging:
   level:
     root: INFO
     org.springframework.web: INFO
+    com.aitravel.planner.service: DEBUG
+
+amap:
+  api:
+    key: ${AMAP_API_KEY:}
+
+llm:
+  openai:
+    apiKey: ${OPENAI_API_KEY:}
+    baseUrl: ${OPENAI_BASE_URL:https://api.openai.com}
+    model: ${OPENAI_MODEL:gpt-4o-mini}
+    # 可选：通过环境变量或此配置覆盖系统提示，提升回答细致度与角色设定
+    systemPrompt: ${OPENAI_SYSTEM_PROMPT:}
 
 security:
   jwt:
