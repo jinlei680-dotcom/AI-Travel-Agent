@@ -1,0 +1,27 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:aitravel;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: 
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+    show-sql: false
+  sql:
+    init:
+      mode: never
+
+logging:
+  level:
+    root: INFO
+    org.springframework.web: INFO
+    com.aitravel.planner.service: DEBUG
+
+amap:
+  api:
+    # 开发环境占位符，若未设置 AMAP_API_KEY 也能启动（调用 AMap 接口会失败）
+    key: ${AMAP_API_KEY:dev-placeholder}

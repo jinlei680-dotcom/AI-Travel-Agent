@@ -41,8 +41,7 @@ export default function MapView({ plan, userText }: { plan?: ItineraryPlan; user
   const [dayIndex, setDayIndex] = useState(0);
   const [fetching, setFetching] = useState(false);
   const [overrideRoutes, setOverrideRoutes] = useState<Record<number, Route[]>>({});
-  const [routeMode, setRouteMode] = useState<"drive"|"walk"|"ride"|"transit">("drive");
-  const [showAlternatives, setShowAlternatives] = useState<boolean>(true);
+  const [routeMode, setRouteMode] = useState<"drive"|"walk"|"transit">("drive");
   const [routeStats, setRouteStats] = useState<{ distanceMeters: number; durationSec: number } | null>(null);
   const [onlyOneSegment, setOnlyOneSegment] = useState<boolean>(false);
   const [selectedSegmentIndex, setSelectedSegmentIndex] = useState<number>(0);
@@ -161,7 +160,47 @@ export default function MapView({ plan, userText }: { plan?: ItineraryPlan; user
       });
       map.add(pl);
       created.push(pl);
+      // 点击折线切换到对应段落
+      if (typeof (r as any).segmentIndex === "number") {
+        try {
+          pl.on("click", () => {
+            setOnlyOneSegment(true);
+            const si = Math.max(0, Math.min(Number((r as any).segmentIndex) || 0, 999));
+            setSelectedSegmentIndex(si);
+          });
+        } catch {}
+      }
+
+      // 站点标注：仅对公交/地铁段显示具体站名
+      if (Array.isArray((r as any).stops) && (r as any).stops!.length > 0) {
+        const stops = (r as any).stops as { name: string; coord: [number, number]; line?: string; type?: string }[];
+        for (const s of stops) {
+          if (!s || !Array.isArray(s.coord) || s.coord.length !== 2) continue;
+          const labelHtml = `
+            <div style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:10px;background:rgba(76,29,149,0.65);color:#fff;font-size:12px;backdrop-filter:saturate(180%) blur(2px);border:1px solid rgba(139,92,246,0.5)">
+              <span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#8b5cf6"></span>
+              <span>${s.name}${s.line ? ` · ${s.line}` : ""}</span>
+            </div>`;
+          const mk = new AMap.Marker({ position: s.coord, title: s.name, label: { content: labelHtml, direction: "top" } });
+          map.add(mk);
+          created.push(mk);
+        }
+      }
     }
+
+    // 统计：根据当前显示的段落计算里程与时长（优先仅看当前段）
+    try {
+      if (Array.isArray(routesToDraw) && routesToDraw.length > 0) {
+        if (onlyOneSegment) {
+          const first = routesToDraw[0];
+          const parts = (first.polyline || "").split(";").map((p) => p.split(",").map(Number)).filter((xy) => xy.length === 2);
+          const path = parts.filter((xy) => Number.isFinite(xy[0]) && Number.isFinite(xy[1])).map((xy) => [xy[0], xy[1]] as [number, number]);
+          const distKm = path.length > 1 ? kmDistance(path) : 0;
+          const durSec = Number.isFinite(Number((first as any).durationSec)) ? Number((first as any).durationSec) : (routeStats?.durationSec ?? 0);
+          setRouteStats({ distanceMeters: distKm * 1000, durationSec: durSec });
+        }
+      }
+    } catch {}
     // POI：仅使用名称校准后的坐标绘制；原始 day.pois 可能无坐标（仅地名），避免直接绘制导致报错
     const poisForDay = (refinedPoisRef.current[safeIndex] && refinedPoisRef.current[safeIndex].length > 0)
       ? refinedPoisRef.current[safeIndex]
@@ -237,7 +276,7 @@ export default function MapView({ plan, userText }: { plan?: ItineraryPlan; user
       const center = plan.cityCenter ?? defaultCenter;
       try { map.setZoomAndCenter(12, center); } catch {}
     }
-  }, [plan, ready, dayIndex, overrideRoutes]);
+  }, [plan, ready, dayIndex, overrideRoutes, onlyOneSegment, selectedSegmentIndex]);
 
   // 名称校准 POI 坐标，并在前端用高德 API 计算多路线
   useEffect(() => {
@@ -411,12 +450,12 @@ export default function MapView({ plan, userText }: { plan?: ItineraryPlan; user
       };
       const collect = (routes: any[], color: string, mode: string) => {
         const list: Route[] = [];
-        const altCount = showAlternatives ? Math.min(routes.length, 3) : 1;
+        const altCount = 1; // 固定仅使用首选路线
         for (let i = 0; i < altCount; i++) {
           const r = routes[i];
           const path = r?.path || r?.polyline || (r?.steps ? r.steps.flatMap((s: any) => s?.path || s?.polyline || []) : []);
           const poly = buildPolylineString(path || []);
-          if (poly && poly.length > 0) list.push({ polyline: poly, color, mode });
+          if (poly && poly.length > 0) list.push({ polyline: poly, color, mode, durationSec: (Number.isFinite(Number(r?.time)) ? Number(r.time) : undefined) });
           if (i === 0) {
             const xy = normalizePath(path || []);
             if (Array.isArray(xy) && xy.length > 1) totalDistanceMeters += kmDistanceLocal(xy) * 1000;
@@ -454,12 +493,44 @@ export default function MapView({ plan, userText }: { plan?: ItineraryPlan; user
                   if (Number.isFinite(plan?.time)) totalDurationSec += Number(plan.time);
                   const segments = plan?.segments || plan?.steps || [];
                   const list: Route[] = [];
+                  const getCoordFromLoc = (loc: any, fallback: [number, number]): [number, number] => {
+                    if (!loc) return fallback;
+                    if (Array.isArray(loc) && loc.length >= 2 && Number.isFinite(loc[0]) && Number.isFinite(loc[1])) {
+                      return [Number(loc[0]), Number(loc[1])];
+                    }
+                    if (typeof loc === "object" && Number.isFinite(loc.lng) && Number.isFinite(loc.lat)) {
+                      return [Number(loc.lng), Number(loc.lat)];
+                    }
+                    return fallback;
+                  };
                   segments.forEach((seg: any) => {
                     const isWalk = ((seg?.type || seg?.segmentType || "") as string).toLowerCase().includes("walk");
                     const path = seg?.path || seg?.walk?.path || seg?.transit?.path || [];
-                    const poly = buildPolylineString(path || []);
-                    if (poly && poly.length > 0) list.push({ polyline: poly, color: isWalk ? "#22c55e" : "#8b5cf6", mode: isWalk ? "walk" : "transit" });
                     const xy = normalizePath(path || []);
+                    const poly = buildPolylineString(path || []);
+                    if (poly && poly.length > 0) {
+                      if (isWalk) {
+                        const segTime = Number.isFinite(Number(seg?.time || seg?.walk?.time)) ? Number(seg?.time || seg?.walk?.time) : undefined;
+                        list.push({ polyline: poly, color: "#22c55e", mode: "walk", durationSec: segTime });
+                      } else {
+                        const lineName = seg?.transit?.lines?.[0]?.name || seg?.transit?.line?.name || seg?.line?.name || seg?.transit?.name || "";
+                        const onObj = seg?.transit?.on_station || seg?.transit?.entrance || null;
+                        const offObj = seg?.transit?.off_station || seg?.transit?.exit || null;
+                        const first = Array.isArray(xy) && xy.length > 0 ? (xy[0] as [number, number]) : undefined;
+                        const last = Array.isArray(xy) && xy.length > 0 ? (xy[xy.length - 1] as [number, number]) : undefined;
+                        const stops: { name: string; coord: [number, number]; line?: string; type?: string }[] = [];
+                        if (onObj && (onObj.name || first)) {
+                          const coord = getCoordFromLoc(onObj.location, (first as any) || (last as any));
+                          stops.push({ name: String(onObj.name || "起点站"), coord, line: lineName, type: (lineName.includes("地铁") || lineName.toLowerCase().includes("metro")) ? "metro" : "bus" });
+                        }
+                        if (offObj && (offObj.name || last)) {
+                          const coord = getCoordFromLoc(offObj.location, (last as any) || (first as any));
+                          stops.push({ name: String(offObj.name || "终点站"), coord, line: lineName, type: (lineName.includes("地铁") || lineName.toLowerCase().includes("metro")) ? "metro" : "bus" });
+                        }
+                        const segTime = Number.isFinite(Number(seg?.time || seg?.transit?.time)) ? Number(seg?.time || seg?.transit?.time) : undefined;
+                        list.push({ polyline: poly, color: "#8b5cf6", mode: "transit", stops, durationSec: segTime });
+                      }
+                    }
                     if (Array.isArray(xy) && xy.length > 1) totalDistanceMeters += kmDistanceLocal(xy) * 1000;
                   });
                   resolve(list);
@@ -474,10 +545,10 @@ export default function MapView({ plan, userText }: { plan?: ItineraryPlan; user
 
       const computeOne = async (start: [number, number], end: [number, number]) => {
         const primary = routeMode;
-        const order = primary === "transit" ? ["transit","drive","walk"]
+        // 合并后不再直接比较 "ride"；保持骑行作为步行的回退方案
+        const order = primary === "transit" ? ["transit","drive","walk","ride"]
           : primary === "walk" ? ["walk","ride","drive"]
-          : primary === "ride" ? ["ride","walk","drive"]
-          : ["drive","ride","walk"];
+          : ["drive","walk","ride"];
         for (const t of order as ("drive"|"walk"|"ride"|"transit")[]) {
           const res = await searchEngine(t, start, end);
           if (Array.isArray(res) && res.length > 0) return res;
@@ -487,9 +558,12 @@ export default function MapView({ plan, userText }: { plan?: ItineraryPlan; user
 
       Promise.all(pairs.map(([s, e]) => computeOne(s, e))).then((segments) => {
         if (reqIdRef.current !== myReqId) return;
-        segmentsByDayRef.current[safeIndex] = segments as Route[][];
+        // 标注段索引，便于点击折线切换
+        const segs = segments as Route[][];
+        segs.forEach((arr, i) => { (arr || []).forEach((r: any) => { r.segmentIndex = i; }); });
+        segmentsByDayRef.current[safeIndex] = segs;
         setSelectedSegmentIndex(0);
-        const merged: Route[] = segments.flat();
+        const merged: Route[] = segs.flat();
         setOverrideRoutes((prev) => ({ ...prev, [safeIndex]: merged }));
         setRouteStats({ distanceMeters: totalDistanceMeters, durationSec: totalDurationSec });
         if (!merged || merged.length === 0) {
@@ -507,7 +581,7 @@ export default function MapView({ plan, userText }: { plan?: ItineraryPlan; user
       setFetching(false);
       setError("地点校准失败");
     });
-  }, [dayIndex, ready, routeMode, showAlternatives, plan, userText]);
+  }, [dayIndex, ready, routeMode, plan, userText]);
 
   return (
     <div>
@@ -530,15 +604,11 @@ export default function MapView({ plan, userText }: { plan?: ItineraryPlan; user
                 className="bg-neutral-800/70 text-neutral-200 rounded px-2 py-1 ring-1 ring-white/10"
               >
                 <option value="drive">驾车</option>
-                <option value="walk">步行</option>
-                <option value="ride">骑行</option>
+                <option value="walk">步行/骑行</option>
                 <option value="transit">公交/地铁</option>
               </select>
             </label>
-            <label className="inline-flex items-center gap-1">
-              <input type="checkbox" checked={showAlternatives} onChange={(e) => setShowAlternatives(e.target.checked)} />
-              显示备选路线
-            </label>
+            {/* 已移除显示备选路线功能 */}
             <label className="inline-flex items-center gap-1">
               <input type="checkbox" checked={onlyOneSegment} onChange={(e) => setOnlyOneSegment(e.target.checked)} />
               仅看当前段
@@ -549,25 +619,25 @@ export default function MapView({ plan, userText }: { plan?: ItineraryPlan; user
                 ? refinedPoisRef.current[sidx]
                 : (plan!.days[sidx]?.pois || [])) as any[];
               const count = Math.max(0, names.length - 1);
-              if (!onlyOneSegment || count <= 0) return null;
-              const segIdx = Math.min(Math.max(selectedSegmentIndex, 0), count - 1);
-              const label = `${names[segIdx]?.name ?? `第${segIdx+1}点`} → ${names[segIdx+1]?.name ?? `第${segIdx+2}点`}`;
+              if (count <= 0) return null;
               return (
                 <div className="inline-flex items-center gap-2">
-                  <button
-                    className="rounded-md px-2 py-1 bg-neutral-800/70 ring-1 ring-white/10"
-                    disabled={segIdx <= 0}
-                    onClick={() => setSelectedSegmentIndex((i) => Math.max(0, i - 1))}
-                  >上一段</button>
-                  <span className="px-2 py-1 rounded-md bg-neutral-800/60 ring-1 ring-white/10">{`当前：${label}`}</span>
-                  <button
-                    className="rounded-md px-2 py-1 bg-neutral-800/70 ring-1 ring-white/10"
-                    disabled={segIdx >= count - 1}
-                    onClick={() => setSelectedSegmentIndex((i) => Math.min(count - 1, i + 1))}
-                  >下一段</button>
+                  <span>段落</span>
+                  {Array.from({ length: count }, (_, i) => {
+                    const label = `${names[i]?.name ?? `第${i+1}点`} → ${names[i+1]?.name ?? `第${i+2}点`}`;
+                    const active = onlyOneSegment && selectedSegmentIndex === i;
+                    return (
+                      <button
+                        key={i}
+                        onClick={() => { setOnlyOneSegment(true); setSelectedSegmentIndex(i); }}
+                        className={`rounded-md px-2 py-1 text-xs ring-1 ring-white/10 ${active ? "bg-violet-700/60 text-white" : "bg-neutral-800/70 text-neutral-200 hover:bg-neutral-700/70"}`}
+                      >{label}</button>
+                    );
+                  })}
                 </div>
               );
             })()}
+            {/* 移除了上一段/下一段功能按钮 */}
             {routeStats && (
               <span className="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-neutral-800/60 ring-1 ring-white/10">
                 <span>里程：{(routeStats.distanceMeters / 1000).toFixed(1)} km</span>

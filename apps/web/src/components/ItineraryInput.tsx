@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { API_BASE, post } from "@/lib/api";
 
 export type Coord = [number, number];
-export type Route = { polyline?: string; color?: string; mode?: string };
+export type Route = { polyline?: string; color?: string; mode?: string; stops?: { name: string; coord: Coord; line?: string; type?: string }[]; segmentIndex?: number; durationSec?: number };
 export type Poi = { name: string; coord: Coord; type?: string; address?: string };
 export type DayPlan = { summary?: string; routes: Route[]; pois: Poi[] };
 export type ItineraryPlan = { cityCenter?: Coord; days: DayPlan[] };
