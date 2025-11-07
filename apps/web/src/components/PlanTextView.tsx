@@ -26,7 +26,7 @@ function toMarkdown(plan: ItineraryPlan): string {
   return lines.join("\n\n");
 }
 
-export default function PlanTextView({ plan, rawText }: { plan?: ItineraryPlan | null; rawText?: string }) {
+export default function PlanTextView({ plan, rawText, variant = "dark" }: { plan?: ItineraryPlan | null; rawText?: string; variant?: "dark" | "light" }) {
   const hasDays = !!plan && Array.isArray(plan?.days) && (plan?.days?.length || 0) > 0;
   const raw = rawText ?? "";
   // 若原文看起来不完整（如只有“第一段”、或某段几乎为空），优先展示结构化计划的 Markdown
@@ -63,63 +63,62 @@ export default function PlanTextView({ plan, rawText }: { plan?: ItineraryPlan |
     ? (looksIncomplete ? "原文可能不完整，仍按原文显示" : "来自后端返回的原始文本")
     : "未提供原文，显示结构化计划概要";
 
+  const isLight = variant === "light";
   const components = {
     h1: ({ children }: any) => (
-      <h1 className="text-2xl md:text-3xl font-semibold text-neutral-100 tracking-tight mb-4">{children}</h1>
+      <h1 className={`${isLight ? "text-neutral-900" : "text-sky-100"} text-2xl md:text-3xl font-semibold tracking-tight mb-4`}>{children}</h1>
     ),
     h2: ({ children }: any) => (
-      <h2 className="text-xl md:text-2xl font-semibold text-neutral-100 mt-6 mb-3">{children}</h2>
+      <h2 className={`${isLight ? "text-neutral-900" : "text-sky-100"} text-xl md:text-2xl font-semibold mt-6 mb-3`}>{children}</h2>
     ),
     h3: ({ children }: any) => (
-      <h3 className="text-lg md:text-xl font-semibold text-neutral-200 mt-4 mb-2">{children}</h3>
+      <h3 className={`${isLight ? "text-neutral-800" : "text-sky-200"} text-lg md:text-xl font-semibold mt-4 mb-2`}>{children}</h3>
     ),
     p: ({ children }: any) => (
-      <p className="leading-7 md:leading-8 text-neutral-200">{children}</p>
+      <p className={`${isLight ? "text-neutral-800" : "text-sky-100"} leading-7 md:leading-8`}>{children}</p>
     ),
     ul: ({ children }: any) => (
-      <ul className="list-disc pl-6 space-y-1 text-neutral-200">{children}</ul>
+      <ul className={`list-disc pl-6 space-y-1 ${isLight ? "text-neutral-800" : "text-sky-100"}`}>{children}</ul>
     ),
     ol: ({ children }: any) => (
-      <ol className="list-decimal pl-6 space-y-1 text-neutral-200">{children}</ol>
+      <ol className={`list-decimal pl-6 space-y-1 ${isLight ? "text-neutral-800" : "text-sky-100"}`}>{children}</ol>
     ),
     li: ({ children }: any) => (
-      <li className="text-neutral-200">{children}</li>
+      <li className={`${isLight ? "text-neutral-800" : "text-sky-100"}`}>{children}</li>
     ),
     blockquote: ({ children }: any) => (
-      <blockquote className="border-l-2 border-white/20 pl-4 text-neutral-300 italic my-3">{children}</blockquote>
+      <blockquote className={`border-l-2 ${isLight ? "border-neutral-300 text-neutral-700" : "border-white/20 text-sky-300"} pl-4 italic my-3`}>{children}</blockquote>
     ),
     code: ({ children }: any) => (
-      <code className="font-mono bg-neutral-800/70 px-1.5 py-0.5 rounded text-violet-200">{children}</code>
+      <code className={`font-mono ${isLight ? "bg-neutral-100 text-violet-700" : "bg-neutral-800/70 text-violet-200"} px-1.5 py-0.5 rounded`}>{children}</code>
     ),
     pre: ({ children }: any) => (
-      <pre className="font-mono bg-neutral-900/60 p-3 rounded-md overflow-x-auto text-sm">{children}</pre>
+      <pre className={`font-mono ${isLight ? "bg-neutral-100 text-neutral-800" : "bg-neutral-900/60"} p-3 rounded-md overflow-x-auto text-sm`}>{children}</pre>
     ),
     a: ({ href, children }: any) => (
-      <a href={href} target="_blank" rel="noreferrer" className="text-violet-300 hover:text-violet-200 underline">{children}</a>
+      <a href={href} target="_blank" rel="noreferrer" className={`${isLight ? "text-violet-700 hover:text-violet-900" : "text-violet-300 hover:text-violet-200"} underline`}>{children}</a>
     ),
     table: ({ children }: any) => (
       <table className="w-full text-left border-collapse my-3">{children}</table>
     ),
     th: ({ children }: any) => (
-      <th className="border-b border-white/10 py-2 font-medium text-neutral-200">{children}</th>
+      <th className={`${isLight ? "border-b border-neutral-300 text-neutral-800" : "border-b border-white/10 text-sky-200"} py-2 font-medium`}>{children}</th>
     ),
     td: ({ children }: any) => (
-      <td className="border-b border-white/5 py-2 text-neutral-300">{children}</td>
+      <td className={`${isLight ? "border-b border-neutral-200 text-neutral-700" : "border-b border-white/5 text-sky-300"} py-2`}>{children}</td>
     ),
   } as any;
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div className="text-sm text-neutral-400">旅游计划</div>
+        <div className={`text-sm ${isLight ? "text-neutral-600" : "text-sky-400"}`}>旅游计划</div>
         {hasDays && (
-          <div className="text-xs text-neutral-500">共 {plan!.days.length} 天</div>
+          <div className={`text-xs ${isLight ? "text-neutral-500" : "text-sky-400"}`}>共 {plan!.days.length} 天</div>
         )}
       </div>
-      <div className="max-w-none rounded-md bg-neutral-900/40 p-5 md:p-6 ring-1 ring-white/10 text-sm md:text-base text-neutral-200 leading-7 h-[68vh] md:h-[75vh] overflow-y-auto">
-        <div className="mb-3 flex items-center gap-2 text-xs">
-          <span className={`inline-flex items-center rounded-full px-2 py-0.5 ${sourceLabel.startsWith("原文") ? "bg-green-700/50 text-green-200" : "bg-blue-700/50 text-blue-200"}`}>{sourceLabel}</span>
-          <span className="text-neutral-400">{hintText}</span>
-        </div>
+      <div className={`max-w-none rounded-md ${isLight ? "bg-transparent ring-0 text-neutral-800" : "bg-neutral-900/40 ring-1 ring-white/10 text-sky-100"} p-5 md:p-6 text-sm md:text-base leading-7 h-[68vh] md:h-[75vh] overflow-y-auto`}
+      >
+        {/* 按要求移除“结构化摘要”等标识与提示 */}
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{markdownSource}</ReactMarkdown>
       </div>
     </div>

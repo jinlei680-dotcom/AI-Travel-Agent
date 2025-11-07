@@ -1,8 +1,14 @@
 @import "tailwindcss";
 
+/* 现代化主题变量与基础样式 */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0a0a0a;
+  --foreground: #f5f5f5; /* neutral-100 更高对比度 */
+  --muted: #cbd5e1;      /* slate-300 更易读 */
+  --border: #3f3f46;     /* zinc-700 轮廓更明显 */
+  --card: rgba(24, 24, 27, 0.7); /* 稍提升不透明度增强层次 */
+  --accent: #38bdf8;     /* sky-400 */
+  --radius: 14px;
 }
 
 @theme inline {
@@ -12,15 +18,56 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #fafafa;
+    --foreground: #171717;
+    --muted: #4b5563;      /* gray-600 */
+    --border: #e5e7eb;     /* gray-200 */
+    --card: rgba(255, 255, 255, 0.7);
+    --accent: #0284c7;     /* sky-600 */
   }
 }
 
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 body {
-  background: var(--background);
+  background: radial-gradient(1200px 600px at 10% -10%, rgba(56, 189, 248, 0.08), rgba(0,0,0,0)) ,
+              radial-gradient(800px 400px at 90% -10%, rgba(99, 102, 241, 0.08), rgba(0,0,0,0)),
+              var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans", "Helvetica Neue", "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+::selection {
+  background: rgba(56, 189, 248, 0.3);
+}
+
+/* 可复用的卡片与容器样式（Tailwind 为主，少量补充） */
+.glass-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 10px 30px rgba(0,0,0,0.25);
+  backdrop-filter: saturate(140%) blur(8px);
+}
+
+.container-narrow {
+  max-width: 72rem; /* ~1152px */
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
+}
+
+/* 更宽的容器，用于需要更大内容区域的页面段落 */
+.container-wide {
+  max-width: 80rem; /* ~1280px */
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
 }

@@ -27,6 +27,15 @@ export default function ItineraryInput({ onPlanned, onUserSubmit, onRawText, hid
       return;
     }
     try { onUserSubmit?.(text); } catch {}
+    // 点击开始规划后，平滑跳转到下半页面（#app）
+    try {
+      const el = document.getElementById("app");
+      if (el && typeof el.scrollIntoView === "function") {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else if (typeof window !== "undefined") {
+        window.location.hash = "#app";
+      }
+    } catch {}
     setLoading(true);
     setStage("sync");
     setHasDraft(false);
@@ -88,29 +97,31 @@ export default function ItineraryInput({ onPlanned, onUserSubmit, onRawText, hid
     <div className="space-y-3">
       <div className="flex items-center">
         {!hideLabel && (
-          <label className="text-sm text-neutral-300">用自然语言描述你的行程需求</label>
+          <label className="text-sm text-sky-300">用自然语言描述你的行程需求</label>
         )}
-        <button
-          onClick={submit}
-          disabled={loading && !hasDraft}
-          className="ml-auto rounded-md bg-gradient-to-r from-violet-500 via-fuchsia-500 to-violet-600 px-4 py-2 text-white shadow-sm hover:from-violet-600 hover:via-fuchsia-600 hover:to-violet-700 disabled:opacity-60"
-        >{loading && !hasDraft ? "规划中..." : "开始规划"}</button>
       </div>
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="例如：北京三天家庭亲子游，6月初，预算3000，主要看博物馆和历史景点"
-        className="w-full rounded-md bg-neutral-900/70 p-4 text-neutral-200 ring-2 ring-white/15 focus:outline-none focus:ring-2 focus:ring-violet-400/60"
-        rows={rows ?? 6}
+        className="w-full rounded-full bg-neutral-900/50 px-4 py-2 text-sky-100 ring-1 ring-white/20 focus:outline-none focus:ring-2 focus:ring-sky-300/60 resize-none"
+        rows={Math.max(1, rows ?? 2)}
       />
+      <div className="flex justify-center">
+        <button
+          onClick={submit}
+          disabled={loading && !hasDraft}
+          className="rounded-full border border-white/20 bg-white/10 px-5 py-2.5 text-white hover:bg-white/20 transition disabled:opacity-60"
+        >{loading && !hasDraft ? "规划中..." : "开始规划"}</button>
+      </div>
       <div className="flex items-center gap-3">
         {stage && !error && (
-          <span className="text-sm text-neutral-300">阶段：{stage}</span>
+          <span className="text-sm text-sky-300">阶段：{stage}</span>
         )}
         {error && <span className="text-sm text-red-400">{error}</span>}
       </div>
       {hasDraft && bgComputing && (
-        <div className="text-xs text-neutral-400">已生成草稿，可先查看；路线优化将在后台完成…</div>
+        <div className="text-xs text-sky-400">已生成草稿，可先查看；路线优化将在后台完成…</div>
       )}
       {finalNotice && (
         <div className="text-xs text-green-400">{finalNotice}</div>

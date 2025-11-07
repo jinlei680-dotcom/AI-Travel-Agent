@@ -585,34 +585,34 @@ export default function MapView({ plan, userText }: { plan?: ItineraryPlan; user
 
   return (
     <div>
-      <div ref={mapEl} className="w-full rounded-lg bg-neutral-800 h-[360px] md:h-[440px]" />
+      {/* 上方：出行方式 + 里程时长统计（对称排布） + 路段选择 */}
       {plan && Array.isArray(plan.days) && plan.days.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {plan.days.map((_, i) => (
-            <button
-              key={i}
-              onClick={() => setDayIndex(i)}
-              className={`rounded-md px-3 py-1 text-sm ring-1 ring-white/10 ${i === dayIndex ? "bg-violet-700/60 text-white" : "bg-neutral-800/70 text-neutral-200 hover:bg-neutral-700/70"}`}
-            >{`第 ${i + 1} 天${fetching && i === dayIndex ? " · 加载中" : ""}`}</button>
-          ))}
-          <div className="ml-auto flex items-center gap-3 text-xs">
-            <label className="inline-flex items-center gap-2">
-              <span>模式</span>
+        <div className="mb-3 space-y-2 text-xs">
+          {/* 第一行：左侧出行方式，右侧统计 */}
+          <div className="grid grid-cols-1 md:grid-cols-2 items-center gap-2">
+            <label className="inline-flex items-center gap-2 justify-self-start">
+              <span>出行方式</span>
               <select
                 value={routeMode}
                 onChange={(e) => setRouteMode(e.target.value as any)}
-                className="bg-neutral-800/70 text-neutral-200 rounded px-2 py-1 ring-1 ring-white/10"
+                className="bg-neutral-100 text-neutral-800 rounded px-2 py-1 ring-1 ring-neutral-300"
               >
                 <option value="drive">驾车</option>
                 <option value="walk">步行/骑行</option>
                 <option value="transit">公交/地铁</option>
               </select>
             </label>
-            {/* 已移除显示备选路线功能 */}
-            <label className="inline-flex items-center gap-1">
-              <input type="checkbox" checked={onlyOneSegment} onChange={(e) => setOnlyOneSegment(e.target.checked)} />
-              仅看当前段
-            </label>
+            <div className="md:justify-self-end">
+              {routeStats && (
+                <span className="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-neutral-50 ring-1 ring-neutral-200 text-neutral-600">
+                  <span>里程：{(routeStats.distanceMeters / 1000).toFixed(1)} km</span>
+                  <span>· 时长：{(() => { const m = Math.round(routeStats.durationSec / 60); const h = Math.floor(m/60); const mm = m%60; return h>0? `${h}小时${mm}分`:`${mm}分`; })()}</span>
+                </span>
+              )}
+            </div>
+          </div>
+          {/* 第二行：路段选择与仅看当前路段 */}
+          <div className="flex flex-wrap items-center gap-2">
             {(() => {
               const sidx = Math.min(Math.max(dayIndex, 0), plan!.days.length - 1);
               const names = ((refinedPoisRef.current[sidx] && refinedPoisRef.current[sidx].length > 0)
@@ -621,8 +621,7 @@ export default function MapView({ plan, userText }: { plan?: ItineraryPlan; user
               const count = Math.max(0, names.length - 1);
               if (count <= 0) return null;
               return (
-                <div className="inline-flex items-center gap-2">
-                  <span>段落</span>
+                <>
                   {Array.from({ length: count }, (_, i) => {
                     const label = `${names[i]?.name ?? `第${i+1}点`} → ${names[i+1]?.name ?? `第${i+2}点`}`;
                     const active = onlyOneSegment && selectedSegmentIndex === i;
@@ -630,35 +629,37 @@ export default function MapView({ plan, userText }: { plan?: ItineraryPlan; user
                       <button
                         key={i}
                         onClick={() => { setOnlyOneSegment(true); setSelectedSegmentIndex(i); }}
-                        className={`rounded-md px-2 py-1 text-xs ring-1 ring-white/10 ${active ? "bg-violet-700/60 text-white" : "bg-neutral-800/70 text-neutral-200 hover:bg-neutral-700/70"}`}
+                        className={`rounded-md px-2 py-1 text-xs ring-1 ${active ? "bg-blue-100 text-blue-800 ring-blue-300" : "bg-neutral-100 text-neutral-800 ring-neutral-300 hover:bg-neutral-200"}`}
                       >{label}</button>
                     );
                   })}
-                </div>
+                </>
               );
             })()}
-            {/* 移除了上一段/下一段功能按钮 */}
-            {routeStats && (
-              <span className="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-neutral-800/60 ring-1 ring-white/10">
-                <span>里程：{(routeStats.distanceMeters / 1000).toFixed(1)} km</span>
-                <span>· 时长：{(() => { const m = Math.round(routeStats.durationSec / 60); const h = Math.floor(m/60); const mm = m%60; return h>0? `${h}小时${mm}分`:`${mm}分`; })()}</span>
-              </span>
-            )}
-            <span className="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-neutral-800/60 ring-1 ring-white/10">
-              <span className="inline-block w-5 h-[3px] rounded bg-blue-500" />
-              <span>驾车</span>
-            </span>
-            <span className="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-neutral-800/60 ring-1 ring-white/10">
-              <span className="inline-block w-5 h-[3px] rounded bg-violet-500" />
-              <span>地铁/公交</span>
-            </span>
-            <span className="inline-flex items-center gap-2 px-2 py-1 rounded-md bg-neutral-800/60 ring-1 ring-white/10">
-              <span className="inline-block w-5 h-[3px] rounded bg-green-500" style={{ borderBottom: "1px dashed rgba(16,185,129,1)" }} />
-              <span>步行/骑行</span>
-            </span>
+            <label className="inline-flex items-center gap-1 text-xs ml-auto">
+              <input type="checkbox" checked={onlyOneSegment} onChange={(e) => setOnlyOneSegment(e.target.checked)} />
+              仅看当前路段
+            </label>
           </div>
         </div>
       )}
+
+      {/* 地图主体 */}
+      <div ref={mapEl} className="w-full rounded-lg bg-neutral-800 h-[460px] md:h-[560px] lg:h-[640px]" />
+
+      {/* 下方：第几天选择 */}
+      {plan && Array.isArray(plan.days) && plan.days.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+          {plan.days.map((_, i) => (
+            <button
+              key={i}
+              onClick={() => setDayIndex(i)}
+              className={`rounded-md px-3 py-1 text-sm ring-1 ${i === dayIndex ? "bg-blue-100 text-blue-800 ring-blue-300" : "bg-neutral-100 text-neutral-800 ring-neutral-300 hover:bg-neutral-200"}`}
+            >{`第 ${i + 1} 天${fetching && i === dayIndex ? " · 加载中" : ""}`}</button>
+          ))}
+        </div>
+      )}
+
       {error && (
         <div className="mt-2 text-xs text-red-400">{error}</div>
       )}
