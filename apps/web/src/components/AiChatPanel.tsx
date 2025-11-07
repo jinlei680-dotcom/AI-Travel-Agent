@@ -19,7 +19,7 @@ function planToText(plan: ItineraryPlan): string {
   return parts.join("\n");
 }
 
-export default function AiChatPanel({ onPlanned, showTranscript = true }: { onPlanned: (p: ItineraryPlan) => void; showTranscript?: boolean }) {
+export default function AiChatPanel({ onPlanned, showTranscript = true, onUserText, onRawText }: { onPlanned: (p: ItineraryPlan) => void; showTranscript?: boolean; onUserText?: (text: string) => void; onRawText?: (text: string, phase: "draft" | "final") => void }) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const lastAssistantIndex = useRef<number | null>(null);
 
@@ -30,27 +30,27 @@ export default function AiChatPanel({ onPlanned, showTranscript = true }: { onPl
   const addUser = (text: string) => {
     setMsgs((prev: Msg[]) => [...prev, makeUserMsg(text)]);
     lastAssistantIndex.current = null; // reset for new assistant reply
+    try { onUserText?.(text); } catch {}
   };
 
-  const addOrUpdateAssistant = (text: string) => {
-    setMsgs((prev: Msg[]) => {
-      if (lastAssistantIndex.current == null) {
-        const next: Msg[] = [...prev, makeAssistantMsg(text)];
-        lastAssistantIndex.current = next.length - 1;
-        return next;
-      } else {
-        const idx = lastAssistantIndex.current!;
-        const next: Msg[] = [...prev];
-        next[idx] = makeAssistantMsg(text);
-        return next;
-      }
-    });
+  const addAssistant = (text: string) => {
+    setMsgs((prev: Msg[]) => [...prev, makeAssistantMsg(text)]);
+    lastAssistantIndex.current = null;
   };
 
   const onPlan = (p: ItineraryPlan) => {
     onPlanned(p);
     const text = planToText(p);
-    addOrUpdateAssistant(text);
+    // 结构化摘要作为单独消息保留
+    addAssistant(text);
+  };
+
+  const handleRawText = (text: string, phase: "draft" | "final") => {
+    if (text && text.trim()) {
+      // 原文优先显示，draft/final 都追加，便于查看差异
+      addAssistant(text);
+      try { onRawText?.(text, phase); } catch {}
+    }
   };
 
   const transcript = useMemo(() => (
@@ -72,7 +72,7 @@ export default function AiChatPanel({ onPlanned, showTranscript = true }: { onPl
       <div className="text-sm text-neutral-400">AI 对话</div>
       {showTranscript && transcript}
       <div className="pt-2">
-        <ItineraryInput onPlanned={onPlan} onUserSubmit={addUser} hideLabel rows={3} />
+        <ItineraryInput onPlanned={onPlan} onUserSubmit={addUser} onRawText={handleRawText} hideLabel rows={3} />
       </div>
     </div>
   );

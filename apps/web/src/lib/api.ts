@@ -1,10 +1,14 @@
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
-export async function post<T>(path: string, body: unknown): Promise<T> {
+export async function post<T>(path: string, body: unknown, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    mode: "cors",
+    credentials: "omit",
+    cache: "no-store",
+    ...init,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -14,8 +18,13 @@ export async function post<T>(path: string, body: unknown): Promise<T> {
   return data as T;
 }
 
-export async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`);
+export async function get<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    mode: "cors",
+    credentials: "omit",
+    cache: "no-store",
+    ...init,
+  });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const msg = (data && (data.error || data.message)) ?? `请求失败 (${res.status})`;
