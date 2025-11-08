@@ -7,11 +7,20 @@ import com.aitravel.planner.itinerary.Route;
 import com.aitravel.planner.service.LlmService;
 import com.aitravel.planner.service.AmapService;
 import com.aitravel.planner.map.AmapClient;
+import com.aitravel.planner.itinerary.Budget;
+import com.aitravel.planner.itinerary.BudgetBreakdown;
+import com.aitravel.planner.itinerary.BudgetCategory;
+import com.aitravel.planner.itinerary.BudgetItem;
+import com.aitravel.planner.util.BudgetParser;
+import com.aitravel.planner.util.BudgetVerifier;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.util.*;
+import java.math.BigDecimal;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @RestController
 @RequestMapping("/api/v1/itinerary")
@@ -39,16 +48,98 @@ public class ItineraryController {
         Optional<LlmService.PlanResult> resOpt = llm.planWithRaw(req.text(), req.city());
         if (resOpt.isPresent()) {
             LlmService.PlanResult pr = resOpt.get();
-            ItineraryPlan enriched = enrichPlan(pr.getPlan(), req.city());
             String rawText = pr.getRawText();
-            // 若 rawText 为空，尝试用第1天 summary 兜底
-            if (rawText == null || rawText.isBlank()) {
-                List<DayPlan> ds = enriched.getDays();
-                if (ds != null && !ds.isEmpty() && ds.get(0).getSummary() != null) {
-                    rawText = ds.get(0).getSummary();
-                }
+            try {
+                rawText = com.aitravel.planner.util.BudgetRawTextNormalizer.normalize(rawText);
+            } catch (Exception ignored) {}
+            // 从原文中尝试提取“总预算”并同步到结构化计划（覆盖/填充 baseBudget）
+            Budget tb = extractTotalBudgetFromText(rawText);
+            // 兜底：若原文未提取到总预算，则总是尝试从请求文本中提取（请求里通常包含“总预算<数值> <币种>”）
+            if ((tb == null || tb.getAmount() == null || tb.getAmount().compareTo(BigDecimal.ZERO) <= 0)) {
+                try {
+                    Budget fromReq = extractTotalBudgetFromText(req.text());
+                    if (fromReq != null) tb = fromReq;
+                } catch (Exception ignored) {}
             }
-            return ResponseEntity.ok(Map.of("plan", enriched, "rawText", rawText));
+            if (tb != null) {
+                try { pr.getPlan().setBaseBudget(tb); } catch (Exception ignored) {}
+            }
+            ItineraryPlan enriched = enrichPlan(pr.getPlan(), req.city());
+            // 优先：使用 LLM 返回的 typed POIs 生成 daily（restaurant/hotel/sight/transport）
+            List<Map<String, Object>> daily = convertPlanToDaily(enriched);
+            // 兜底：若 LLM 未提供类型或为空，再回退到原文解析
+            if (daily == null || daily.isEmpty()) {
+                daily = parseDailyFromRawText(rawText, req.city());
+            }
+            // 解析结构化预算并返回一致性标志
+            BudgetBreakdown breakdown = BudgetParser.parse(rawText);
+            breakdown = BudgetVerifier.fixAndAlign(breakdown);
+            // 当原文预算缺失或解析为 0 时，依据 baseBudget 提供保守的降级拆分（标记为未对齐）
+            try {
+                if (breakdown == null) breakdown = new BudgetBreakdown();
+                BigDecimal grand = breakdown.getGrandTotal() == null ? BigDecimal.ZERO : breakdown.getGrandTotal();
+                // 条件1：总计为 0（无预算解析结果）
+                if (grand.compareTo(BigDecimal.ZERO) == 0) {
+                    Budget base = enriched != null ? enriched.getBaseBudget() : null;
+                    if (base != null && base.getAmount() != null && base.getAmount().compareTo(BigDecimal.ZERO) > 0) {
+                        BigDecimal total = base.getAmount();
+                        String cur = base.getCurrency() == null || base.getCurrency().isBlank() ? "CNY" : base.getCurrency();
+                        java.util.List<BudgetCategory> cats = new java.util.ArrayList<>();
+                        java.util.function.BiFunction<String, BigDecimal, BudgetCategory> mk = (name, amt) -> {
+                            BudgetCategory c = new BudgetCategory(name, cur);
+                            // 单项“估算”以便前端显示具体费用项
+                            BudgetItem it = new BudgetItem(name + "（估算）", amt, cur);
+                            c.getItems().add(it);
+                            c.setTotal(amt);
+                            return c;
+                        };
+                        cats.add(mk.apply("住宿", total.multiply(new BigDecimal("0.40"))));
+                        cats.add(mk.apply("餐饮", total.multiply(new BigDecimal("0.30"))));
+                        cats.add(mk.apply("交通", total.multiply(new BigDecimal("0.15"))));
+                        cats.add(mk.apply("门票", total.multiply(new BigDecimal("0.15"))));
+                        breakdown.setCategories(cats);
+                        breakdown.setCurrency(cur);
+                        breakdown.setGrandTotal(total);
+                        breakdown.setAligned(false);
+                    }
+                }
+                // 条件2：类别有效值过少（例如仅一个类别非零），也进行降级拆分以给出可用的具体项
+                int nonZeroCats = 0;
+                for (BudgetCategory c : breakdown.getCategories()) {
+                    if (c.getTotal() != null && c.getTotal().compareTo(BigDecimal.ZERO) > 0) nonZeroCats++;
+                }
+                if (nonZeroCats < 2) {
+                    Budget base = enriched != null ? enriched.getBaseBudget() : null;
+                    if (base != null && base.getAmount() != null && base.getAmount().compareTo(BigDecimal.ZERO) > 0) {
+                        BigDecimal total = base.getAmount();
+                        String cur = base.getCurrency() == null || base.getCurrency().isBlank() ? "CNY" : base.getCurrency();
+                        java.util.List<BudgetCategory> cats = new java.util.ArrayList<>();
+                        java.util.function.BiFunction<String, BigDecimal, BudgetCategory> mk = (name, amt) -> {
+                            BudgetCategory c = new BudgetCategory(name, cur);
+                            BudgetItem it = new BudgetItem(name + "（估算）", amt, cur);
+                            c.getItems().add(it);
+                            c.setTotal(amt);
+                            return c;
+                        };
+                        cats.add(mk.apply("住宿", total.multiply(new BigDecimal("0.40"))));
+                        cats.add(mk.apply("餐饮", total.multiply(new BigDecimal("0.30"))));
+                        cats.add(mk.apply("交通", total.multiply(new BigDecimal("0.15"))));
+                        cats.add(mk.apply("门票", total.multiply(new BigDecimal("0.15"))));
+                        breakdown.setCategories(cats);
+                        breakdown.setCurrency(cur);
+                        breakdown.setGrandTotal(total);
+                        breakdown.setAligned(false);
+                    }
+                }
+            } catch (Exception ignored) {}
+            // 按要求：不再以摘要兜底，保持原文（可能为空）
+            return ResponseEntity.ok(Map.of(
+                    "plan", enriched,
+                    "rawText", rawText,
+                    "daily", daily,
+                    "budget", breakdown,
+                    "budgetAligned", breakdown != null && breakdown.isAligned()
+            ));
         }
         // 不返回降级示例：若 LLM 不可用或超时，直接返回错误
         return ResponseEntity.status(502).body(Map.of(
@@ -82,7 +173,7 @@ public class ItineraryController {
             } else {
                 prompt.append("规划合理行程。");
             }
-            prompt.append("请以 JSON 输出包含 cityCenter、days（每天 summary、routes、pois）。");
+            prompt.append("请以 JSON 输出包含 cityCenter、baseBudget{amount,currency}、days（每天 summary、routes、pois）。");
             effectiveText = prompt.toString();
         }
         final String requestText = effectiveText;
@@ -122,6 +213,14 @@ public class ItineraryController {
                     List<Double> center = new ArrayList<>();
                     for (JsonNode n : planNode.path("cityCenter")) { center.add(n.asDouble()); }
                     plan.setCityCenter(center.isEmpty() ? List.of(116.402, 39.907) : center);
+                    JsonNode budgetNode = planNode.path("baseBudget");
+                    if (budgetNode.isObject()) {
+                        try {
+                            java.math.BigDecimal amt = new java.math.BigDecimal(budgetNode.path("amount").asText("0"));
+                            String cur = budgetNode.path("currency").asText(null);
+                            if (cur != null && !cur.isBlank()) plan.setBaseBudget(new com.aitravel.planner.itinerary.Budget(amt, cur));
+                        } catch (Exception ignored) {}
+                    }
                     List<Route> routes = new ArrayList<>();
                     List<DayPlan> dayPlans = new ArrayList<>();
                     for (JsonNode d : planNode.path("days")) {
@@ -177,9 +276,15 @@ public class ItineraryController {
 
                 emitter.send(SseEmitter.event().name("progress").data(Map.of("stage", "llm_stream_end")));
                 ItineraryPlan enriched = enrichPlan(finalPlanOpt.get(), requestCity);
+                // 当 LLM 流输出为空时，回退使用请求文本进行预算解析，确保无 API Key 也能得到预算结果
+                String budgetSource = acc.length() > 0 ? acc.toString() : requestText;
+                BudgetBreakdown breakdown = BudgetParser.parse(budgetSource);
+                breakdown = BudgetVerifier.fixAndAlign(breakdown);
                 emitter.send(SseEmitter.event().name("final").data(Map.of(
                         "plan", enriched,
-                        "rawText", acc.toString()
+                        "rawText", acc.toString(),
+                        "budget", breakdown,
+                        "budgetAligned", breakdown != null && breakdown.isAligned()
                 )));
                 emitter.complete();
             } catch (Exception e) {
@@ -188,6 +293,48 @@ public class ItineraryController {
             }
         }).start();
         return emitter;
+    }
+
+    /**
+     * 从原始文本中提取“总预算”金额与币种，映射为 Budget。
+     * 支持示例："总预算：5000元人民币"、"总预算: 5000 CNY"、"预算控制在5000人民币左右"。
+     */
+    private Budget extractTotalBudgetFromText(String raw) {
+        if (raw == null) return null;
+        String text = raw.replace(",", "");
+        // 1) 优先匹配以“总预算”开头的表达
+        Pattern p1 = Pattern.compile("总预算[：:]\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(人民币|RMB|CNY|元)?", Pattern.CASE_INSENSITIVE);
+        Matcher m1 = p1.matcher(text);
+        if (m1.find()) {
+            try {
+                BigDecimal amt = new BigDecimal(m1.group(1));
+                String cur = normalizeCurrency(m1.group(2), text);
+                return new Budget(amt, cur);
+            } catch (Exception ignored) {}
+        }
+        // 2) 次优：一般性预算表达（含金额与币种）
+        Pattern p2 = Pattern.compile("预算(?:控制在|约|大约|大概)?[^\\n]*?([0-9]+(?:\\.[0-9]+)?)\\s*(人民币|RMB|CNY|元)", Pattern.CASE_INSENSITIVE);
+        Matcher m2 = p2.matcher(text);
+        if (m2.find()) {
+            try {
+                BigDecimal amt = new BigDecimal(m2.group(1));
+                String cur = normalizeCurrency(m2.group(2), text);
+                return new Budget(amt, cur);
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    private String normalizeCurrency(String curRaw, String fullText) {
+        String c = curRaw == null ? "" : curRaw.trim().toUpperCase();
+        if (c.isEmpty()) {
+            // 根据上下文推断：含“人民币/元/RMB/CNY”默认 CNY，否则保守默认 CNY
+            String t = fullText == null ? "" : fullText.toUpperCase();
+            if (t.contains("人民币") || t.contains("元") || t.contains("RMB") || t.contains("CNY")) return "CNY";
+            return "CNY";
+        }
+        if (c.equals("人民币") || c.equals("元") || c.equals("RMB") || c.equals("CNY")) return "CNY";
+        return c;
     }
 
     /**
@@ -258,6 +405,12 @@ public class ItineraryController {
                 List<Double> builtin = cityCenterHint;
                 plan.setCityCenter(builtin != null ? builtin : List.of(116.402, 39.907));
             }
+        }
+        // 若基础预算缺失，按天数提供默认预算（简化：每人每天 500 CNY）
+        if (plan.getBaseBudget() == null) {
+            int dcount = days.size();
+            java.math.BigDecimal amt = java.math.BigDecimal.valueOf(Math.max(1, dcount) * 500L);
+            plan.setBaseBudget(new com.aitravel.planner.itinerary.Budget(amt, "CNY"));
         }
         return plan;
     }
@@ -489,5 +642,185 @@ public class ItineraryController {
         // 去重
         LinkedHashSet<String> set = new LinkedHashSet<>(names);
         return new ArrayList<>(set);
+    }
+
+    /**
+     * 从原文(rawText)解析每日“景点/住宿/餐饮/交通”信息。
+     * 设计目标：
+     * - 优先按“第X天/Day X/D1”等标题切分；
+     * - 每段内按关键字分类（酒店/住宿、餐厅/早餐/午餐/晚餐、地铁/交通）；其余归为景点；
+     * - 若未检测到任何天标题，回退使用 LLM 提取 nav plan 并据 POI 名称进行分类。
+     */
+    private List<Map<String, Object>> parseDailyFromRawText(String rawText, String city) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (rawText == null || rawText.trim().isEmpty()) return out;
+        String raw = rawText;
+        // 收集“第X天”中文标题
+        java.util.regex.Pattern pZh = java.util.regex.Pattern.compile("(\\n|^)[#\\s]*第\\s*([0-9一二三四五六七八九十]+)\\s*天[^\\n]*", java.util.regex.Pattern.CASE_INSENSITIVE);
+        java.util.regex.Pattern pEn = java.util.regex.Pattern.compile("(\\n|^)[#\\s]*(?:DAY|Day|D)\\s*([0-9]+)[^\\n]*", java.util.regex.Pattern.CASE_INSENSITIVE);
+        List<int[]> ranges = new ArrayList<>();
+        List<String> titles = new ArrayList<>();
+        java.util.regex.Matcher mZh = pZh.matcher(raw);
+        while (mZh.find()) {
+            int start = mZh.start();
+            titles.add("第 " + mZh.group(2) + " 天");
+            ranges.add(new int[]{start, -1});
+        }
+        // 仅当未找到中文标题时再尝试英文标题
+        if (ranges.isEmpty()) {
+            java.util.regex.Matcher mEn = pEn.matcher(raw);
+            while (mEn.find()) {
+                int start = mEn.start();
+                titles.add("Day " + mEn.group(2));
+                ranges.add(new int[]{start, -1});
+            }
+        }
+        // 完成每个区间的结束位置
+        for (int i = 0; i < ranges.size(); i++) {
+            ranges.get(i)[1] = (i + 1 < ranges.size()) ? ranges.get(i + 1)[0] : raw.length();
+        }
+        // 分类关键字（增强餐饮/交通识别，并过滤预算等非 POI 文本）
+        java.util.function.Function<String, String> classify = (name) -> {
+            String n = name == null ? "" : name.trim();
+            // 基础清洗：去掉日标题、末尾标点与“等”等尾词
+            n = n.replaceAll("^(第\\s*[0-9一二三四五六七八九十]+\\s*天|(?:DAY|Day|D)\\s*\\d+)[：:]?", "");
+            n = n.replaceAll("[。.!？！…]+$", "");
+            n = n.replaceAll("(等|之类)$", "");
+
+            // 非 POI：预算/费用描述直接跳过
+            if (n.matches(".*(预算|费用|花费|人均|价格|约\\s*\\d+|¥|元).*")) return "nonpoi";
+
+            // 住宿：更全面的关键词
+            if (n.matches(".*(酒店|民宿|宾馆|旅店|客栈|青旅|入住|住宿|inn|hostel|hotel).*")) return "lodging";
+
+            // 餐饮：场所与常见菜品/食物关键词（覆盖小笼包/粉丝汤等）
+            if (n.matches(".*(餐厅|餐馆|饭店|酒楼|菜馆|小吃|美食|早餐|午餐|晚餐|早茶|夜宵|奶茶|茶馆|咖啡|咖啡馆|烘焙|甜品|糕点|面馆|粉馆|烧烤|火锅|烤鸭|米线|螺蛳粉|小笼包|包子|馄饨|粉丝汤|拉面|牛肉面|汤包|生煎|串串|蟹黄汤包|砂锅|汤|面|粉).*")) return "restaurant";
+
+            // 交通：到达/出发/站点等
+            if (n.matches(".*(地铁|公交|火车|高铁|航班|机场|车站|码头|出租车|打车|步行|骑行|交通|抵达|到达|出发|前往|转乘|换乘).*")) return "transport";
+
+            return "attraction";
+        };
+
+        // 解析每段
+        for (int i = 0; i < ranges.size(); i++) {
+            int s = ranges.get(i)[0];
+            int e = ranges.get(i)[1];
+            String chunk = raw.substring(s, Math.max(s, e));
+            String title = titles.get(i);
+            List<String> atts = new ArrayList<>();
+            List<String> lods = new ArrayList<>();
+            List<String> rests = new ArrayList<>();
+            List<String> trans = new ArrayList<>();
+            // 按行扫描：从项目符号或逗号/顿号分割提取候选名称
+            String[] lines = chunk.split("\\n+");
+            for (String line : lines) {
+                String cleaned = line.replaceAll("^[#>*\\s-•·]+", "").trim();
+                if (cleaned.length() < 2) continue;
+                String[] parts = cleaned.split("[、，,；;\\s]+");
+                for (String part : parts) {
+                    String nm = part.trim();
+                    if (nm.length() < 2) continue;
+                    String t = classify.apply(nm);
+                    if (t.equals("nonpoi")) continue; // 跳过预算/费用等非 POI
+                    if (t.equals("lodging")) lods.add(nm);
+                    else if (t.equals("restaurant")) rests.add(nm);
+                    else if (t.equals("transport")) trans.add(nm);
+                    else atts.add(nm);
+                }
+            }
+            // 去重、精简
+            lods = new ArrayList<>(new java.util.LinkedHashSet<>(lods));
+            rests = new ArrayList<>(new java.util.LinkedHashSet<>(rests));
+            trans = new ArrayList<>(new java.util.LinkedHashSet<>(trans));
+            atts = new ArrayList<>(new java.util.LinkedHashSet<>(atts));
+            java.util.Map<String, Object> day = new java.util.LinkedHashMap<>();
+            day.put("title", title);
+            day.put("attractions", atts);
+            day.put("lodging", lods);
+            day.put("restaurants", rests);
+            day.put("transport", trans);
+            out.add(day);
+        }
+
+        // 若未解析到任何天标题，尝试调用 LLM 从原文提取 nav plan 并据 POI 分类
+        if (out.isEmpty()) {
+            try {
+                java.util.Optional<com.aitravel.planner.itinerary.ItineraryPlan> planOpt = llm.extractNavPlan(rawText, city);
+                if (planOpt.isPresent() && planOpt.get().getDays() != null) {
+                    List<com.aitravel.planner.itinerary.DayPlan> ds = planOpt.get().getDays();
+                    for (int i = 0; i < ds.size(); i++) {
+                        com.aitravel.planner.itinerary.DayPlan d = ds.get(i);
+                        List<String> atts = new ArrayList<>();
+                        List<String> lods = new ArrayList<>();
+                        List<String> rests = new ArrayList<>();
+                        List<String> trans = new ArrayList<>();
+                        List<com.aitravel.planner.itinerary.Poi> pois = d.getPois();
+                        if (pois != null) {
+                            for (com.aitravel.planner.itinerary.Poi p : pois) {
+                                String nm = p.getName();
+                                String t = classify.apply(nm);
+                                if (t.equals("lodging")) lods.add(nm);
+                                else if (t.equals("restaurant")) rests.add(nm);
+                                else if (t.equals("transport")) trans.add(nm);
+                                else atts.add(nm);
+                            }
+                        }
+                        java.util.Map<String, Object> day = new java.util.LinkedHashMap<>();
+                        day.put("title", "第 " + (i + 1) + " 天");
+                        day.put("attractions", new java.util.ArrayList<>(new java.util.LinkedHashSet<>(atts)));
+                        day.put("lodging", new java.util.ArrayList<>(new java.util.LinkedHashSet<>(lods)));
+                        day.put("restaurants", new java.util.ArrayList<>(new java.util.LinkedHashSet<>(rests)));
+                        day.put("transport", new java.util.ArrayList<>(new java.util.LinkedHashSet<>(trans)));
+                        out.add(day);
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+        return out;
+    }
+
+    /**
+     * 使用 LLM 结构化计划中的 typed POIs 直接生成 daily 数据。
+     * 将 poi.type 映射为 { restaurants, lodging, attractions, transport } 四类。
+     */
+    private List<Map<String, Object>> convertPlanToDaily(ItineraryPlan plan) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (plan == null || plan.getDays() == null || plan.getDays().isEmpty()) return out;
+        List<DayPlan> days = plan.getDays();
+        for (int i = 0; i < days.size(); i++) {
+            DayPlan d = days.get(i);
+            List<String> atts = new ArrayList<>();
+            List<String> lods = new ArrayList<>();
+            List<String> rests = new ArrayList<>();
+            List<String> trans = new ArrayList<>();
+            List<Poi> pois = d.getPois();
+            if (pois != null) {
+                for (Poi p : pois) {
+                    String nm = p.getName() == null ? "" : p.getName().trim();
+                    if (nm.length() < 2) continue;
+                    String tp = p.getType() == null ? "" : p.getType().toLowerCase();
+                    // 统一类型映射
+                    if (tp.contains("hotel") || tp.contains("lodg") || tp.contains("inn") || tp.contains("hostel") || tp.contains("住宿") || tp.contains("酒店")) {
+                        lods.add(nm);
+                    } else if (tp.contains("rest") || tp.contains("food") || tp.contains("cafe") || tp.contains("bar") || tp.contains("餐") || tp.contains("美食") || tp.contains("小吃")) {
+                        rests.add(nm);
+                    } else if (tp.contains("transport") || tp.contains("metro") || tp.contains("subway") || tp.contains("bus") || tp.contains("train") || tp.contains("airport") || tp.contains("车站") || tp.contains("地铁")) {
+                        trans.add(nm);
+                    } else {
+                        // 默认归为景点（sight/museum/park 等）
+                        atts.add(nm);
+                    }
+                }
+            }
+            Map<String, Object> day = new LinkedHashMap<>();
+            day.put("title", "第 " + (i + 1) + " 天");
+            day.put("attractions", new ArrayList<>(new LinkedHashSet<>(atts)));
+            day.put("lodging", new ArrayList<>(new LinkedHashSet<>(lods)));
+            day.put("restaurants", new ArrayList<>(new LinkedHashSet<>(rests)));
+            day.put("transport", new ArrayList<>(new LinkedHashSet<>(trans)));
+            out.add(day);
+        }
+        return out;
     }
 }

@@ -4,6 +4,7 @@ import com.aitravel.planner.itinerary.DayPlan;
 import com.aitravel.planner.itinerary.ItineraryPlan;
 import com.aitravel.planner.itinerary.Poi;
 import com.aitravel.planner.itinerary.Route;
+import com.aitravel.planner.itinerary.Budget;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -127,7 +128,7 @@ public class LlmService {
             Map<String, Object> body = new HashMap<>();
             body.put("model", openaiModel);
             String userContentBase = (city == null || city.isBlank()) ? text : (text + "\n城市:" + city);
-            String navHint = "\n\n请严格以 JSON 输出，并包含每日导航信息：cityCenter, days[].summary, days[].routes[].polyline/color, days[].pois[].name/coord/type。" +
+            String navHint = "\n\n请严格以 JSON 输出，并包含每日导航信息：cityCenter, totalBudget{amount,currency} 或 baseBudget{amount,currency}（优先 totalBudget）, days[].summary, days[].routes[].polyline/color, days[].pois[].name/coord/type。" +
                     "\n路线 polyline 采用 \"lng,lat;lng,lat;...\" 格式，经纬度为 GCJ-02 或接近值。";
             String userContent = userContentBase + navHint;
             List<Map<String, String>> messages = List.of(
@@ -203,6 +204,17 @@ public class LlmService {
                         List<Double> center = new ArrayList<>();
                         for (JsonNode n : planNode.path("cityCenter")) { center.add(n.asDouble()); }
                         plan.setCityCenter(center.isEmpty() ? List.of(116.402, 39.907) : center);
+                // 预算优先 totalBudget，其次 baseBudget
+                JsonNode budgetNode = planNode.path("totalBudget");
+                if (!budgetNode.isObject()) budgetNode = planNode.path("baseBudget");
+                if (budgetNode.isObject()) {
+                    try {
+                        String amtText = budgetNode.path("amount").asText("0");
+                        java.math.BigDecimal amt = new java.math.BigDecimal(amtText);
+                        String cur = budgetNode.path("currency").asText(null);
+                        if (cur != null && !cur.isBlank()) plan.setBaseBudget(new Budget(amt, cur));
+                    } catch (Exception ignored) {}
+                }
                         List<DayPlan> days = new ArrayList<>();
                         for (JsonNode d : planNode.path("days")) {
                             DayPlan day = new DayPlan();
@@ -239,6 +251,17 @@ public class LlmService {
                 List<Double> center = new ArrayList<>();
                 for (JsonNode n : planNode.path("cityCenter")) { center.add(n.asDouble()); }
                 plan.setCityCenter(center.isEmpty() ? List.of(116.402, 39.907) : center);
+                // 预算优先 totalBudget，其次 baseBudget
+                JsonNode budgetNode = planNode.path("totalBudget");
+                if (!budgetNode.isObject()) budgetNode = planNode.path("baseBudget");
+                if (budgetNode.isObject()) {
+                    try {
+                        String amtText = budgetNode.path("amount").asText("0");
+                        java.math.BigDecimal amt = new java.math.BigDecimal(amtText);
+                        String cur = budgetNode.path("currency").asText(null);
+                        if (cur != null && !cur.isBlank()) plan.setBaseBudget(new Budget(amt, cur));
+                    } catch (Exception ignored) {}
+                }
                 List<DayPlan> days = new ArrayList<>();
                 for (JsonNode d : planNode.path("days")) {
                     DayPlan day = new DayPlan();
@@ -320,7 +343,7 @@ public class LlmService {
             Map<String, Object> body = new HashMap<>();
             body.put("model", openaiModel);
             String userContentBase = (city == null || city.isBlank()) ? text : (text + "\n城市:" + city);
-            String navHint = "\n\n请严格以 JSON 输出，并包含每日导航信息：cityCenter, days[].summary, days[].routes[].polyline/color, days[].pois[].name/coord/type。" +
+            String navHint = "\n\n请严格以 JSON 输出，并包含每日导航信息：cityCenter, totalBudget{amount,currency} 或 baseBudget{amount,currency}（优先 totalBudget）, days[].summary, days[].routes[].polyline/color, days[].pois[].name/coord/type。" +
                     "\n路线 polyline 采用 \"lng,lat;lng,lat;...\" 格式，经纬度为 GCJ-02 或接近值。";
             String userContent = userContentBase + navHint;
             List<Map<String, String>> messages = List.of(
@@ -477,10 +500,314 @@ public class LlmService {
     }
 
     /**
+     * 使用会话历史(prevMessages)作为上下文，随后在最后一条 user 中附加导航提示，生成结构化计划与原始文本。
+     * prevMessages 应包含 role=user/assistant 的历史消息，方法会自动补充 system 提示。
+     */
+    public Optional<PlanResult> planWithRawWithContext(String text, String city, List<Map<String, String>> prevMessages) {
+        if (openaiApiKey == null || openaiApiKey.isBlank()) {
+            log.warn("OPENAI API KEY 未配置，跳过 LLM 调用");
+            return Optional.empty();
+        }
+        try {
+            String url;
+            boolean isDashScope = openaiBaseUrl != null && openaiBaseUrl.contains("dashscope.aliyuncs.com");
+            boolean isDashScopeCompatible = isDashScope && (
+                    openaiBaseUrl.contains("/compatible") || openaiBaseUrl.contains("/compatible-mode")
+            );
+            boolean preferTextGeneration = isDashScope && !isDashScopeCompatible &&
+                    (openaiModel != null && openaiModel.toLowerCase(Locale.ROOT).contains("qwen-plus"));
+            if (isDashScopeCompatible) {
+                if (openaiBaseUrl.endsWith("/v1") || openaiBaseUrl.endsWith("/v1/")) {
+                    url = openaiBaseUrl + "/chat/completions";
+                } else {
+                    url = openaiBaseUrl + "/v1/chat/completions";
+                }
+            } else if (isDashScope) {
+                url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation";
+            } else {
+                if (openaiBaseUrl != null && (openaiBaseUrl.endsWith("/v1") || openaiBaseUrl.endsWith("/v1/"))) {
+                    url = openaiBaseUrl + "/chat/completions";
+                } else {
+                    url = openaiBaseUrl + "/v1/chat/completions";
+                }
+            }
+
+            Map<String, Object> body = new HashMap<>();
+            body.put("model", openaiModel);
+            String userContentBase = (city == null || city.isBlank()) ? text : (text + "\n城市:" + city);
+            String navHint = "\n\n请严格以 JSON 输出，并包含每日导航信息：cityCenter, days[].summary, days[].routes[].polyline/color, days[].pois[].name/coord/type。" +
+                    "\n路线 polyline 采用 \"lng,lat;lng,lat;...\" 格式，经纬度为 GCJ-02 或接近值。";
+
+            if (isDashScope && !isDashScopeCompatible) {
+                // 将历史与当前请求拼为一个 prompt
+                StringBuilder sb = new StringBuilder();
+                if (systemPrompt != null && !systemPrompt.isBlank()) sb.append(systemPrompt).append("\n\n");
+                if (prevMessages != null) {
+                    for (Map<String, String> m : prevMessages) {
+                        String role = m.getOrDefault("role", "user");
+                        String content = m.getOrDefault("content", "");
+                        sb.append(role).append(": ").append(content).append("\n");
+                    }
+                }
+                sb.append("用户: ").append(userContentBase).append(navHint);
+                body.put("input", Map.of("prompt", sb.toString()));
+                body.put("parameters", Map.of("result_format", "text"));
+            } else {
+                List<Map<String, String>> messages = new ArrayList<>();
+                messages.add(Map.of("role", "system", "content", systemPrompt));
+                if (prevMessages != null) messages.addAll(prevMessages);
+                messages.add(Map.of("role", "user", "content", userContentBase + navHint));
+                body.put("messages", messages);
+                body.put("stream", false);
+            }
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.setBearerAuth(openaiApiKey);
+            String jsonBody = mapper.writeValueAsString(body);
+            log.debug("LLM(上下文) POST {} model={}", url, openaiModel);
+            HttpEntity<String> reqEntity = new HttpEntity<>(jsonBody, headers);
+            ResponseEntity<String> res;
+            try {
+                res = http.postForEntity(url, reqEntity, String.class);
+            } catch (Exception callErr) {
+                // DashScope 标准端点失败，尝试兼容模式
+                if (isDashScope && !isDashScopeCompatible) {
+                    String compatUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+                    Map<String, Object> compatBody = new HashMap<>();
+                    compatBody.put("model", openaiModel);
+                    List<Map<String, String>> messages = new ArrayList<>();
+                    messages.add(Map.of("role", "system", "content", systemPrompt));
+                    if (prevMessages != null) messages.addAll(prevMessages);
+                    messages.add(Map.of("role", "user", "content", userContentBase + navHint));
+                    compatBody.put("messages", messages);
+                    compatBody.put("stream", false);
+                    String compatJson = mapper.writeValueAsString(compatBody);
+                    HttpEntity<String> req2 = new HttpEntity<>(compatJson, headers);
+                    res = http.postForEntity(compatUrl, req2, String.class);
+                } else {
+                    throw callErr;
+                }
+            }
+
+            String raw = extractRawTextFromResponse(res.getBody());
+            Optional<ItineraryPlan> planOpt = extractPlanFromRawText(raw);
+            if (planOpt.isPresent()) {
+                return Optional.of(new PlanResult(planOpt.get(), raw));
+            }
+            // 若未能解析到 JSON，尝试以导航计划回退
+            Optional<ItineraryPlan> navPlanOpt = extractNavPlanFallback(raw);
+            if (navPlanOpt.isPresent()) return Optional.of(new PlanResult(navPlanOpt.get(), raw));
+            // 再次兜底：构造仅含 summary 的一天计划
+            ItineraryPlan p = new ItineraryPlan();
+            DayPlan day = new DayPlan();
+            day.setSummary(raw);
+            day.setRoutes(Collections.emptyList());
+            day.setPois(Collections.emptyList());
+            p.setDays(List.of(day));
+            return Optional.of(new PlanResult(p, raw));
+        } catch (Exception e) {
+            log.warn("调用 LLM(上下文) 失败: {}", e.toString());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * 从 HTTP 响应体中抽取文本内容，用于后续基于原文再做 JSON 解析。
+     */
+    private String extractRawTextFromResponse(String body) {
+        if (body == null) return "";
+        try {
+            JsonNode root = mapper.readTree(body);
+            String content = root.path("choices").path(0).path("message").path("content").asText("");
+            if (content.isBlank()) content = root.path("output").path("choices").path(0).path("message").path("content").asText("");
+            if (content.isBlank()) content = root.path("output").path("text").asText("");
+            if (content.isBlank()) content = root.path("output_text").asText("");
+            // 去除可能夹带的 NAV_PLAN_JSON 等结构化区块，仅保留自由文本
+            if (content == null) return "";
+            return stripPlanJsonFromRaw(content);
+        } catch (Exception e) {
+            log.warn("解析响应原文失败，直接返回 body 文本: {}", e.toString());
+            return stripPlanJsonFromRaw(body);
+        }
+    }
+
+    /**
+     * 从原文中剔除以 "NAV_PLAN_JSON:"（或包含 JSON 代码块）开头的结构化数据，只保留自然语言文本。
+     * 同时清理围绕 JSON 的 ```json 样式代码块包裹。
+     */
+    private String stripPlanJsonFromRaw(String content) {
+        if (content == null || content.isBlank()) return "";
+        String s = content;
+        try {
+            int markerIdx = s.indexOf("NAV_PLAN_JSON:");
+            if (markerIdx >= 0) {
+                int start = s.indexOf('{', markerIdx);
+                if (start < 0) {
+                    // 没有大括号，直接裁剪掉从标记到末尾
+                    s = s.substring(0, markerIdx).trim();
+                } else {
+                    int end = findMatchingBraceEnd(s, start);
+                    if (end < 0) {
+                        // 寻找不到匹配，保守地截到最后一个 '}'
+                        end = s.lastIndexOf('}');
+                    }
+                    if (end >= start) {
+                        // 删除标记到 JSON 结束的内容
+                        s = (s.substring(0, markerIdx) + s.substring(end + 1)).trim();
+                    }
+                }
+            }
+            // 额外处理 ```json ... ``` 代码块
+            int fenceStart = s.indexOf("```json");
+            if (fenceStart >= 0) {
+                int fenceEnd = s.indexOf("```", fenceStart + 7);
+                if (fenceEnd > fenceStart) {
+                    s = (s.substring(0, fenceStart) + s.substring(fenceEnd + 3)).trim();
+                }
+            }
+            // 清理孤立的大括号包裹的整段（如模型直接输出纯 JSON），若整段是 JSON，直接置空文本
+            String trimmed = s.trim();
+            if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+                // 如果是纯 JSON，返回空字符串，避免在聊天中显示结构化数据
+                return "";
+            }
+            return s;
+        } catch (Exception ignored) {
+            return s.trim();
+        }
+    }
+
+    /**
+     * 在字符串中从某个 '{' 位置开始查找与之匹配的 '}' 的索引，考虑嵌套。
+     */
+    private int findMatchingBraceEnd(String s, int startIndex) {
+        int depth = 0;
+        for (int i = startIndex; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '{') depth++;
+            else if (c == '}') {
+                depth--;
+                if (depth == 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * 解析 JSON 节点为 ItineraryPlan。
+     */
+    private ItineraryPlan parsePlanNode(JsonNode planNode) {
+        ItineraryPlan plan = new ItineraryPlan();
+        List<Double> center = new ArrayList<>();
+        for (JsonNode n : planNode.path("cityCenter")) { center.add(n.asDouble()); }
+        plan.setCityCenter(center.isEmpty() ? List.of(116.402, 39.907) : center);
+        // 预算优先 totalBudget，其次 baseBudget
+        JsonNode budgetNode = planNode.path("totalBudget");
+        if (!budgetNode.isObject()) budgetNode = planNode.path("baseBudget");
+        if (budgetNode.isObject()) {
+            try {
+                String amtText = budgetNode.path("amount").asText("0");
+                java.math.BigDecimal amt = new java.math.BigDecimal(amtText);
+                String cur = budgetNode.path("currency").asText(null);
+                if (cur != null && !cur.isBlank()) plan.setBaseBudget(new Budget(amt, cur));
+            } catch (Exception ignored) {}
+        }
+        List<DayPlan> days = new ArrayList<>();
+        for (JsonNode d : planNode.path("days")) {
+            DayPlan day = new DayPlan();
+            day.setSummary(d.path("summary").asText(null));
+            List<Route> routes = new ArrayList<>();
+            for (JsonNode r : d.path("routes")) {
+                Route rt = new Route();
+                rt.setPolyline(r.path("polyline").asText(null));
+                rt.setColor(r.path("color").asText(null));
+                routes.add(rt);
+            }
+            day.setRoutes(routes);
+            List<Poi> pois = new ArrayList<>();
+            for (JsonNode p : d.path("pois")) {
+                Poi poi = new Poi();
+                poi.setName(p.path("name").asText(null));
+                List<Double> coord = new ArrayList<>();
+                for (JsonNode c : p.path("coord")) { coord.add(c.asDouble()); }
+                poi.setCoord(coord);
+                poi.setType(p.path("type").asText(null));
+                pois.add(poi);
+            }
+            day.setPois(pois);
+            days.add(day);
+        }
+        plan.setDays(days);
+        return plan;
+    }
+
+    /**
+     * 从原始文本中尝试提取导航 JSON 并解析为 ItineraryPlan。
+     */
+    private Optional<ItineraryPlan> extractPlanFromRawText(String raw) {
+        if (raw == null || raw.isBlank()) return Optional.empty();
+        try {
+            // 1) 支持 NAV_PLAN_JSON: 后随纯 JSON 的格式
+            String marker = "NAV_PLAN_JSON:";
+            int markerIdx = raw.indexOf(marker);
+            if (markerIdx >= 0) {
+                int startBrace = raw.indexOf('{', markerIdx);
+                int endBrace = raw.lastIndexOf('}');
+                if (startBrace >= 0 && endBrace > startBrace) {
+                    String json = raw.substring(startBrace, endBrace + 1);
+                    JsonNode planNode = mapper.readTree(json);
+                    return Optional.of(parsePlanNode(planNode));
+                }
+            }
+            // 2) 尝试直接按 JSON 解析；兼容 { displayText, navPlan } 或旧版直接 nav JSON
+            JsonNode rootNode = mapper.readTree(raw);
+            JsonNode planNode = rootNode.has("navPlan") ? rootNode.path("navPlan") : rootNode;
+            // 必须包含 days 字段才算有效
+            if (planNode.path("days").isArray()) {
+                return Optional.of(parsePlanNode(planNode));
+            }
+        } catch (Exception ignored) {
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * 本地解析失败时的回退：尝试截取原文中的最后一个 JSON 区块；若仍失败，调用 extractNavPlan 走模型提取。
+     */
+    private Optional<ItineraryPlan> extractNavPlanFallback(String raw) {
+        if (raw == null || raw.isBlank()) return Optional.empty();
+        // 先尝试本地解析
+        Optional<ItineraryPlan> local = extractPlanFromRawText(raw);
+        if (local.isPresent()) return local;
+        try {
+            int start = raw.indexOf('{');
+            int end = raw.lastIndexOf('}');
+            if (start >= 0 && end > start) {
+                String json = raw.substring(start, end + 1);
+                JsonNode node = mapper.readTree(json);
+                JsonNode planNode = node.has("navPlan") ? node.path("navPlan") : node;
+                if (planNode.path("days").isArray()) {
+                    return Optional.of(parsePlanNode(planNode));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        // 最后回退到调用提取接口（可能依赖外部模型）
+        try {
+            Optional<ItineraryPlan> viaModel = extractNavPlan(raw, null);
+            if (viaModel.isPresent()) return viaModel;
+        } catch (Exception e) {
+            log.warn("回退到模型提取失败: {}", e.toString());
+        }
+        return Optional.empty();
+    }
+
+    /**
      * 流式获取纯文本内容（OpenAI 兼容接口）。
      * 仅在非 DashScope 标准端点时启用真实流式；其它情况回退为同步，避免不兼容导致错误。
      */
-    
+
     /**
      * 从原始文本(rawText)中提取结构化导航 JSON，并解析为 ItineraryPlan。
      * 若调用或解析失败，返回 Optional.empty()。
@@ -516,7 +843,7 @@ public class LlmService {
 
             String extractSystem =
                     "你是一位资深旅游规划师，请严格以 JSON 输出，不要包含任何解释、反引号或 Markdown。\n" +
-                    "目标：仅从下方原始行程文本中提取结构化导航 JSON（cityCenter, days[].summary, days[].routes[].polyline/color, days[].pois[].name/coord/type）。键名必须与规范完全匹配。\n" +
+                    "目标：仅从下方原始行程文本中提取结构化导航 JSON（cityCenter, totalBudget{amount,currency} 或 baseBudget{amount,currency}（优先 totalBudget）, days[].summary, days[].routes[].polyline/color, days[].pois[].name/coord/type）。键名必须与规范完全匹配。\n" +
                     "要求：\n" +
                     "- 坚持纯 JSON；不要输出任何多余文本。\n" +
                     "- 每天至少 4–6 个 POI，type 合理标注（如 sight/museum/restaurant/hotel）。\n" +
@@ -595,6 +922,17 @@ public class LlmService {
                 java.util.List<Double> center = new java.util.ArrayList<>();
                 for (com.fasterxml.jackson.databind.JsonNode n : planNode.path("cityCenter")) { center.add(n.asDouble()); }
                 plan.setCityCenter(center.isEmpty() ? java.util.List.of(116.402, 39.907) : center);
+                // 预算优先 totalBudget，其次 baseBudget
+                com.fasterxml.jackson.databind.JsonNode budgetNode = planNode.path("totalBudget");
+                if (!budgetNode.isObject()) budgetNode = planNode.path("baseBudget");
+                if (budgetNode.isObject()) {
+                    try {
+                        String amtText = budgetNode.path("amount").asText("0");
+                        java.math.BigDecimal amt = new java.math.BigDecimal(amtText);
+                        String cur = budgetNode.path("currency").asText(null);
+                        if (cur != null && !cur.isBlank()) plan.setBaseBudget(new com.aitravel.planner.itinerary.Budget(amt, cur));
+                    } catch (Exception ignored) {}
+                }
                 java.util.List<DayPlan> days = new java.util.ArrayList<>();
                 for (com.fasterxml.jackson.databind.JsonNode d : planNode.path("days")) {
                     DayPlan day = new DayPlan();

@@ -6,9 +6,15 @@ export type Coord = [number, number];
 export type Route = { polyline?: string; color?: string; mode?: string; stops?: { name: string; coord: Coord; line?: string; type?: string }[]; segmentIndex?: number; durationSec?: number };
 export type Poi = { name: string; coord: Coord; type?: string; address?: string };
 export type DayPlan = { summary?: string; routes: Route[]; pois: Poi[] };
-export type ItineraryPlan = { cityCenter?: Coord; days: DayPlan[] };
+export type Budget = { amount?: number; currency?: string };
+export type ItineraryPlan = { cityCenter?: Coord; days: DayPlan[]; baseBudget?: Budget };
+export type DailySegment = { title: string; attractions: string[]; lodging: string[]; restaurants: string[]; transport?: string[] };
 
-export default function ItineraryInput({ onPlanned, onUserSubmit, onRawText, hideLabel, rows }: { onPlanned: (p: ItineraryPlan) => void; onUserSubmit?: (text: string) => void; onRawText?: (text: string, phase: "draft" | "final") => void; hideLabel?: boolean; rows?: number }) {
+export type BackendBudgetItem = { name: string; amount?: number; currency?: string };
+export type BackendBudgetCategory = { name: string; items: BackendBudgetItem[]; total?: number; currency?: string };
+export type BackendBudgetBreakdown = { currency?: string; categories: BackendBudgetCategory[]; grandTotal?: number; aligned?: boolean };
+
+export default function ItineraryInput({ onPlanned, onUserSubmit, onRawText, onDaily, onBudget, hideLabel, rows, variant = "plan", conversationId }: { onPlanned: (p: ItineraryPlan) => void; onUserSubmit?: (text: string) => void; onRawText?: (text: string, phase: "draft" | "final") => void; onDaily?: (days: DailySegment[]) => void; onBudget?: (b: BackendBudgetBreakdown, aligned?: boolean) => void; hideLabel?: boolean; rows?: number; variant?: "plan" | "chat"; conversationId?: string }) {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,22 +63,48 @@ export default function ItineraryInput({ onPlanned, onUserSubmit, onRawText, hid
           return undefined;
         };
         const city = inferCityFromText(text);
-        const res = await post<{ plan: ItineraryPlan; rawText?: string }>(
-          "/api/v1/itinerary/plan",
-          city ? { text, city } : { text },
+        const endpoint = (variant === "chat" && conversationId)
+          ? `/api/v1/conversations/${conversationId}/chat-plan`
+          : "/api/v1/itinerary/plan";
+        const payload = city ? { text, city } : { text };
+        const res = await post<{ plan: ItineraryPlan; rawText?: string; daily?: DailySegment[]; budget?: BackendBudgetBreakdown; budgetAligned?: boolean }>(
+          endpoint,
+          payload,
           { signal: controller.signal }
         );
         let plan = (res as any).plan ?? (res as any);
         plan = expandPlanDaysByText(plan as ItineraryPlan, text);
         onPlanned(plan as ItineraryPlan);
+        // 传递后端解析好的每日结构（若有）
+        try {
+          const daily = (res as any)?.daily;
+          if (Array.isArray(daily)) {
+            onDaily?.(daily as DailySegment[]);
+          }
+        } catch {}
+        // 后端结构化预算
+        try {
+          const bd = (res as any)?.budget;
+          const aligned = (res as any)?.budgetAligned;
+          if (bd && typeof bd === "object") {
+            onBudget?.(bd as BackendBudgetBreakdown, aligned as boolean | undefined);
+          }
+        } catch {}
         try {
           const raw = (res as any)?.rawText;
-          if (typeof raw === "string" && raw.trim()) {
-            onRawText?.(raw, "final");
+          // 聊天模式只显示后端返回的原文，不做摘要回退
+          if (variant === "chat") {
+            if (typeof raw === "string" && raw.trim()) {
+              onRawText?.(raw, "final");
+            } else {
+              // 原文为空时给出轻提示，避免“无回应”的体验
+              onRawText?.("已生成行程，请查看下方卡片。", "final");
+            }
           } else {
-            const summaryText = (plan as ItineraryPlan)?.days?.[0]?.summary ?? "";
-            if (typeof summaryText === "string" && summaryText.trim()) {
-              onRawText?.(summaryText, "final");
+            // 非聊天模式：若后端未提供原文，则不再用“第1天摘要”覆盖，
+            // 让展示组件回退到结构化计划的 Markdown，多日信息更完整。
+            if (typeof raw === "string" && raw.trim()) {
+              onRawText?.(raw, "final");
             }
           }
         } catch {}
@@ -97,22 +129,22 @@ export default function ItineraryInput({ onPlanned, onUserSubmit, onRawText, hid
     <div className="space-y-3">
       <div className="flex items-center">
         {!hideLabel && (
-          <label className="text-sm text-sky-300">用自然语言描述你的行程需求</label>
+          <label className="text-sm text-neutral-600">用自然语言描述你的行程需求</label>
         )}
       </div>
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="例如：北京三天家庭亲子游，6月初，预算3000，主要看博物馆和历史景点"
-        className="w-full rounded-full bg-neutral-900/50 px-4 py-2 text-sky-100 ring-1 ring-white/20 focus:outline-none focus:ring-2 focus:ring-sky-300/60 resize-none"
+        className={`${variant === "chat" ? "w-full rounded-xl bg-white px-3 py-2 text-neutral-800 ring-1 ring-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-400" : "w-full rounded-md bg-white px-3 py-2 text-neutral-800 ring-1 ring-neutral-300 focus:outline-none focus:ring-2 focus:ring-violet-300"} resize-none placeholder:text-neutral-400`}
         rows={Math.max(1, rows ?? 2)}
       />
-      <div className="flex justify-center">
+      <div className={`flex ${variant === "chat" ? "justify-end" : "justify-center"}`}>
         <button
           onClick={submit}
           disabled={loading && !hasDraft}
-          className="rounded-full border border-white/20 bg-white/10 px-5 py-2.5 text-white hover:bg-white/20 transition disabled:opacity-60"
-        >{loading && !hasDraft ? "规划中..." : "开始规划"}</button>
+          className={`${variant === "chat" ? "rounded-xl bg-blue-600 text-white px-4 py-2 text-sm hover:bg-blue-700 shadow-sm" : "rounded-full border border-white/20 bg-white/10 px-5 py-2.5 text-white hover:bg-white/20 transition"} disabled:opacity-60`}
+        >{variant === "chat" ? (loading && !hasDraft ? "发送中..." : "发送") : (loading && !hasDraft ? "规划中..." : "开始规划")}</button>
       </div>
       <div className="flex items-center gap-3">
         {stage && !error && (

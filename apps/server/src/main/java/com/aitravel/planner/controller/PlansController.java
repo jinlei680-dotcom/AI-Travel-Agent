@@ -6,6 +6,8 @@ import com.aitravel.planner.repo.DayRepository;
 import com.aitravel.planner.repo.PlanRepository;
 import com.aitravel.planner.service.PlanningService;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -27,16 +29,24 @@ public class PlansController {
         this.planning = planning;
     }
 
+    private Optional<com.aitravel.planner.auth.JwtUser> currentUser() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !(auth.getPrincipal() instanceof com.aitravel.planner.auth.JwtUser)) return Optional.empty();
+        return Optional.of((com.aitravel.planner.auth.JwtUser) auth.getPrincipal());
+    }
+
     @PostMapping
     public ResponseEntity<?> create(@RequestBody CreatePlanRequest req) {
-        if (req.ownerId() == null || req.destination() == null || req.startDate() == null || req.endDate() == null) {
-            return ResponseEntity.badRequest().body(Map.of("error", "ownerId、destination、startDate、endDate 不能为空"));
+        var cu = currentUser();
+        if (cu.isEmpty()) return ResponseEntity.status(401).body(Map.of("error", "未认证"));
+        if (req.destination() == null || req.startDate() == null || req.endDate() == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "destination、startDate、endDate 不能为空"));
         }
         if (!req.endDate().isEqual(req.startDate()) && req.endDate().isBefore(req.startDate())) {
             return ResponseEntity.badRequest().body(Map.of("error", "结束日期必须不早于开始日期"));
         }
         Plan p = new Plan();
-        p.setOwnerId(req.ownerId());
+        p.setOwnerId(cu.get().getId());
         p.setDestination(req.destination());
         p.setStartDate(req.startDate());
         p.setEndDate(req.endDate());
@@ -53,9 +63,14 @@ public class PlansController {
 
     @PostMapping("/{id}/generate")
     public ResponseEntity<?> generate(@PathVariable("id") UUID id) {
+        var cu = currentUser();
+        if (cu.isEmpty()) return ResponseEntity.status(401).body(Map.of("error", "未认证"));
         Optional<Plan> popt = plans.findById(id);
         if (popt.isEmpty()) {
             return ResponseEntity.status(404).body(Map.of("error", "行程不存在"));
+        }
+        if (!popt.get().getOwnerId().equals(cu.get().getId())) {
+            return ResponseEntity.status(403).body(Map.of("error", "无权限操作该行程"));
         }
         Plan plan = popt.get();
         List<Day> generated = planning.generateDaysForPlan(plan);
@@ -67,9 +82,14 @@ public class PlansController {
 
     @GetMapping("/{id}")
     public ResponseEntity<?> get(@PathVariable("id") UUID id) {
+        var cu = currentUser();
+        if (cu.isEmpty()) return ResponseEntity.status(401).body(Map.of("error", "未认证"));
         Optional<Plan> popt = plans.findById(id);
         if (popt.isEmpty()) {
             return ResponseEntity.status(404).body(Map.of("error", "行程不存在"));
+        }
+        if (!popt.get().getOwnerId().equals(cu.get().getId())) {
+            return ResponseEntity.status(403).body(Map.of("error", "无权限查看该行程"));
         }
         Plan plan = popt.get();
         List<Day> ds = days.findByPlanIdOrderByIndexAsc(id);
@@ -78,7 +98,13 @@ public class PlansController {
 
     @GetMapping
     public ResponseEntity<?> list(@RequestParam(value = "ownerId", required = false) UUID ownerId) {
-        List<Plan> res = ownerId == null ? plans.findAll() : plans.findByOwnerId(ownerId);
+        var cu = currentUser();
+        if (cu.isEmpty()) return ResponseEntity.status(401).body(Map.of("error", "未认证"));
+        UUID oid = ownerId == null ? cu.get().getId() : ownerId;
+        if (!oid.equals(cu.get().getId())) {
+            return ResponseEntity.status(403).body(Map.of("error", "不能查询其他用户的行程"));
+        }
+        List<Plan> res = plans.findByOwnerId(oid);
         return ResponseEntity.ok(res);
     }
 

@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { post } from "@/lib/api";
 
 type Mode = "login" | "register";
@@ -40,10 +41,10 @@ export default function AuthModal({ open, mode, onClose, onAuthed }: {
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+  const modal = (
+    <div className="fixed inset-0 z-50 grid place-items-center">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative w-full max-w-md rounded-2xl bg-neutral-900/90 p-6 text-neutral-100 ring-1 ring-white/10">
+      <div className="relative w-full max-w-md max-h-[90vh] overflow-auto rounded-2xl bg-neutral-900/90 p-6 text-neutral-100 ring-1 ring-white/10">
         <div className="mb-4 flex items-center justify-between">
           <div className="flex gap-2 rounded bg-neutral-800 p-1">
             <button
@@ -89,4 +90,8 @@ export default function AuthModal({ open, mode, onClose, onAuthed }: {
       </div>
     </div>
   );
+
+  // 使用 Portal 渲染到 body，避免受导航栏的样式/定位影响
+  if (typeof document === "undefined") return null;
+  return createPortal(modal, document.body);
 }

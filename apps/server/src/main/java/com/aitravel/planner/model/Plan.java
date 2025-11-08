@@ -19,6 +19,9 @@ public class Plan {
     @Column(name = "owner_id", nullable = false)
     private UUID ownerId;
 
+    @Column(name = "conversation_id")
+    private UUID conversationId;
+
     @Column(nullable = false)
     private String destination;
 
@@ -55,6 +58,9 @@ public class Plan {
 
     public UUID getOwnerId() { return ownerId; }
     public void setOwnerId(UUID ownerId) { this.ownerId = ownerId; }
+
+    public UUID getConversationId() { return conversationId; }
+    public void setConversationId(UUID conversationId) { this.conversationId = conversationId; }
 
     public String getDestination() { return destination; }
     public void setDestination(String destination) { this.destination = destination; }

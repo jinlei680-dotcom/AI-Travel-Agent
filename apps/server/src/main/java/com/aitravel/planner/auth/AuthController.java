@@ -22,6 +22,16 @@ public class AuthController {
         this.jwt = jwt;
     }
 
+    // Read-only endpoint for diagnosing login issues: check if email exists
+    @GetMapping("/exists")
+    public ResponseEntity<?> exists(@RequestParam("email") String email) {
+        if (email == null || email.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "邮箱不能为空"));
+        }
+        boolean exists = users.existsByEmail(email);
+        return ResponseEntity.ok(Map.of("exists", exists));
+    }
+
     @PostMapping("/register")
     public ResponseEntity<?> register(@RequestBody RegisterRequest req) {
         if (req.email() == null || req.password() == null || req.email().isBlank() || req.password().isBlank()) {

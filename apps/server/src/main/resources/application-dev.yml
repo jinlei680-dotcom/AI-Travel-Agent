@@ -1,6 +1,7 @@
 spring:
   datasource:
-    url: jdbc:h2:mem:aitravel;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    # 切换为文件模式以实现持久化（相对路径 ./data/aitravel）
+    url: jdbc:h2:file:./data/aitravel;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
     driver-class-name: org.h2.Driver
     username: sa
     password: 

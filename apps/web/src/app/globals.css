@@ -71,3 +71,13 @@ body {
   padding-left: 1.5rem;
   padding-right: 1.5rem;
 }
+
+/* 视口全宽区块（用于需要左右贴边的模块） */
+.full-bleed {
+  position: relative;
+  left: 50%;
+  right: 50%;
+  margin-left: -50vw;
+  margin-right: -50vw;
+  width: 100vw;
+}
